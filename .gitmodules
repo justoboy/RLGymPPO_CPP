@@ -4,3 +4,6 @@
 [submodule "RLBotCPP"]
 	path = RLBotCPP
 	url = https://github.com/kipje13/RLBotCPP
+[submodule "RLGymPPO_CPP/RLGymSim_CPP"]
+	path = RLGymPPO_CPP/RLGymSim_CPP
+	url = https://github.com/justoboy/RLGymSim_CPP.git
