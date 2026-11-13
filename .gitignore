@@ -38,6 +38,9 @@ out/
 # Raw binary files
 *.bin
 
+# JetBrains IDE (PyCharm) settings
+.idea/
+
 # Visual Studio (not using anything VS-related)
 .vs/
 *.vcxproj
