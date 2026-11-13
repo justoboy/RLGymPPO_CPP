@@ -309,8 +309,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 	}
 
 	// Compute magnitude of updates made to the policy and value estimator
-	auto policyAfter = _CopyParams(policy);
-	auto criticAfter = _CopyParams(valueNet);
+	auto policyAfter = _CopyParams(*policy->net);
+	auto criticAfter = _CopyParams(*valueNet);
 
 	float policyUpdateMagnitude = (policyBefore - policyAfter).norm().item<float>();
 	float criticUpdateMagnitude = (criticBefore - criticAfter).norm().item<float>();
@@ -361,7 +361,7 @@ constexpr const char* OPTIM_FILE_NAMES[] = {
 	"PPO_CRITIC_OPTIM.lt",
 };
 
-void TorchLoadSaveSeq(torch::nn::Module& module, std::filesystem::path path, c10::Device device, bool load) {
+void TorchLoadSaveSeq(std::shared_ptr<torch::nn::Module> module, std::filesystem::path path, c10::Device device, bool load) {
 	if (load) {
 		auto streamIn = std::ifstream(path, std::ios::binary);
 		streamIn >> std::noskipws;
@@ -369,7 +369,7 @@ void TorchLoadSaveSeq(torch::nn::Module& module, std::filesystem::path path, c10
 		if (!streamIn.good())
 			RG_ERR_CLOSE("Failed to load from " << path << ", file does not exist or can't be accessed");
 
-		auto sizesBefore = GetSeqSizes(module);
+		auto sizesBefore = GetSeqSizes(*module);
 
 		try {
 			torch::load(module, streamIn, device);
@@ -382,7 +382,7 @@ void TorchLoadSaveSeq(torch::nn::Module& module, std::filesystem::path path, c10
 
 		// Torch will happily load in a model of a totally different size, then we will crash when we try to use it
 		// So we need to manually check if it is the same size
-		auto sizesAfter = GetSeqSizes(module);
+		auto sizesAfter = GetSeqSizes(*module);
 		if (!std::equal(sizesBefore.begin(), sizesBefore.end(), sizesAfter.begin(), sizesAfter.end())) {
 			std::stringstream stream;
 			stream << "Saved model has different size than current model, cannot load model from " << path << ":\n";
@@ -413,10 +413,10 @@ void TorchLoadSaveAll(RLGPC::PPOLearner* learner, std::filesystem::path folderPa
 			RG_ERR_CLOSE("PPOLearner: Failed to find file \"" << MODEL_FILE_NAMES[0] << "\" in " << folderPath << ".")
 	}
 
-	TorchLoadSaveSeq(*learner->policy->net, folderPath / MODEL_FILE_NAMES[0], learner->device, load);
+	TorchLoadSaveSeq(learner->policy->net.ptr(), folderPath / MODEL_FILE_NAMES[0], learner->device, load);
 
 	if (!load || std::filesystem::exists(folderPath / MODEL_FILE_NAMES[1]))
-		TorchLoadSaveSeq(*learner->valueNet, folderPath / MODEL_FILE_NAMES[1], learner->device, load);
+		TorchLoadSaveSeq(learner->valueNet.ptr(), folderPath / MODEL_FILE_NAMES[1], learner->device, load);
 
 	// Load or save optimizers
 	if (load) {
@@ -472,7 +472,7 @@ RLGPC::GaussianPolicy* RLGPC::PPOLearner::LoadAdditionalPolicy(std::filesystem::
 		return NULL;
 
 	GaussianPolicy* newPolicy = new GaussianPolicy(config.perceiver, policy->device);
-	TorchLoadSaveSeq(*newPolicy->net, policyPath, newPolicy->device, true);
+	TorchLoadSaveSeq(newPolicy->net.ptr(), policyPath, newPolicy->device, true);
 	return newPolicy;
 }
 

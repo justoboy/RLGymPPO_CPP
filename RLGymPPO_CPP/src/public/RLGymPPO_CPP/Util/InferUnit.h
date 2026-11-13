@@ -6,6 +6,7 @@
 // Model types are part of this unit's public surface (the critic member is a PerceiverNet),
 // so the module headers come in via relative include paths.
 #include "../../../private/RLGymPPO_CPP/PPO/GaussianPolicy.h"
+#include <torch/torch.h>
 
 namespace RLGPC {
 	// Standalone inference wrapper around the EARL Perceiver actor/critic. Loads a model
@@ -17,6 +18,8 @@ namespace RLGPC {
 		RLGSC::ActionParser* actionParser;
 		class GaussianPolicy* policy;
 		PerceiverNet critic{nullptr};
+		bool isPolicy;
+		torch::Device device{torch::kCPU};
 
 		InferUnit(
 			RLGSC::OBSBuilder* obsBuilder, RLGSC::ActionParser* actionParser, 

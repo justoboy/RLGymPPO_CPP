@@ -2,11 +2,17 @@
 #include "../Model/PerceiverNet.h"
 #include <RLGymPPO_CPP/PPO/PPOLearnerConfig.h>
 
-// Continuous Gaussian actor wrapper (replaces the old discrete DiscretePolicy).
-// Mirrors reference.agent.ContinuousPolicy: the actor PerceiverNet head outputs
-// [mean(nControls) || log_std(nControls)]; policy = Independent Normal.
-//   log_std.clamp(-5, 2); std = exp(log_std).clamp(1e-4, 10)
-//   log_prob/entropy SUM over the control channels (independent, 1-dim event).
+// Switchable actor wrapper. The PerceiverNet trunk is identical for both arms; only the
+// head and the log_prob/entropy/sample math differ, mirroring reference.agent's
+// get_actor() dispatch on spec.head:
+//   CONTINUOUS (ContinuousPolicy): head -> [mean(nControls) || log_std(nControls)];
+//     policy = Independent Normal. log_std.clamp(-5,2); std = exp(log_std).clamp(1e-4,10);
+//     log_prob/entropy SUM over channels.
+//   DISCRETE   (CategoricalControlsPolicy): head -> (nControls, maxBins) logits; one
+//     independent softmax per channel (pad slots beyond nBins[c] masked to -inf); log_prob/
+//     entropy are the Independent(Categorical) sum over channels; sample/argmax -> bin idx.
+// The class name is kept as GaussianPolicy for call-site stability; it is the actor wrapper
+// for BOTH arms (the head type is selected by config.headType).
 namespace RLGPC {
 	class GaussianPolicy {
 	public:
@@ -14,6 +20,7 @@ namespace RLGPC {
 		PerceiverConfig config;
 		torch::Device device;
 		int nControls;
+		HeadType headType;
 
 		GaussianPolicy(const PerceiverConfig& config, torch::Device device);
 
@@ -22,7 +29,7 @@ namespace RLGPC {
 		// Deep copy of this policy into a fresh GaussianPolicy (same layout config)
 		GaussianPolicy* Clone();
 
-		void CopyTo(GaussianPolicy& to) { net->CopyTo(to.net); }
+		void CopyTo(GaussianPolicy& to) { net->CopyTo(to.net.ptr()); }
 
 		struct ActionResult {
 			torch::Tensor action, logProb;

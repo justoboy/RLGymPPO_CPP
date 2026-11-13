@@ -15,10 +15,25 @@ torch::Tensor RLGPC::ContinuousControlsHeadImpl::forward(const torch::Tensor& x)
 	return torch::cat({ m, ls }, -1);
 }
 
+RLGPC::CategoricalControlsHeadImpl::CategoricalControlsHeadImpl(int inFeatures, const std::vector<int>& nBins)
+	: nBins(nBins) {
+	maxBins = 0;
+	for (int b : nBins) maxBins = std::max(maxBins, b);
+	// Python: self.logits = Linear(in_features, n_controls * max_bins)
+	logits = register_module("logits",
+		torch::nn::Linear(torch::nn::LinearOptions(inFeatures, (int64_t)nBins.size() * maxBins)));
+}
+
+torch::Tensor RLGPC::CategoricalControlsHeadImpl::forward(const torch::Tensor& x) {
+	// Python: out = self.logits(x); out.reshape(*out.shape[:-1], n_controls, max_bins)
+	auto out = logits->forward(x); // (B,1,nControls*maxBins)
+	return out.reshape({ out.size(0), out.size(1), (int64_t)nBins.size(), (int64_t)maxBins });
+}
+
 RLGPC::PerceiverNetImpl::PerceiverNetImpl(
 	EARLPerceiver earl, torch::nn::Linear output,
 	int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize) :
-	earl(std::move(earl)), criticHead(std::move(output)), isActor(false), chunkSize(chunkSize),
+	earl(std::move(earl)), criticHead(std::move(output)), headType(HeadType::CONTINUOUS), chunkSize(chunkSize),
 	queryFeatures(queryFeatures), kvFeatures(kvFeatures), nTokens(nTokens) {
 
 	register_module("earl", this->earl);
@@ -28,11 +43,21 @@ RLGPC::PerceiverNetImpl::PerceiverNetImpl(
 RLGPC::PerceiverNetImpl::PerceiverNetImpl(
 	EARLPerceiver earl, ContinuousControlsHead output,
 	int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize) :
-	earl(std::move(earl)), actorHead(std::move(output)), isActor(true), chunkSize(chunkSize),
+	earl(std::move(earl)), contHead(std::move(output)), headType(HeadType::CONTINUOUS), chunkSize(chunkSize),
 	queryFeatures(queryFeatures), kvFeatures(kvFeatures), nTokens(nTokens) {
 
 	register_module("earl", this->earl);
-	register_module("output", this->actorHead);
+	register_module("output", this->contHead);
+}
+
+RLGPC::PerceiverNetImpl::PerceiverNetImpl(
+	EARLPerceiver earl, CategoricalControlsHead output,
+	int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize) :
+	earl(std::move(earl)), catHead(std::move(output)), headType(HeadType::DISCRETE), chunkSize(chunkSize),
+	queryFeatures(queryFeatures), kvFeatures(kvFeatures), nTokens(nTokens) {
+
+	register_module("earl", this->earl);
+	register_module("output", this->catHead);
 }
 
 torch::Tensor RLGPC::PerceiverNetImpl::Forward(const torch::Tensor& flatObs) {
@@ -50,7 +75,8 @@ torch::Tensor RLGPC::PerceiverNetImpl::Forward(const torch::Tensor& flatObs) {
 	// critic runs over the whole rollout buffer in one call).
 	if (B <= chunkSize) {
 		auto res = earl->forward(q, kv, m);
-		res = isActor ? actorHead->forward(torch::relu(res)) : criticHead->forward(torch::relu(res));
+		res = headType == HeadType::DISCRETE ? catHead->forward(torch::relu(res))
+			: (criticHead ? criticHead->forward(torch::relu(res)) : contHead->forward(torch::relu(res)));
 		return res.slice(1, 0, 1).squeeze(1); // [:, 0, :]
 	}
 
@@ -58,7 +84,8 @@ torch::Tensor RLGPC::PerceiverNetImpl::Forward(const torch::Tensor& flatObs) {
 	for (int64_t i = 0; i < B; i += chunkSize) {
 		int64_t end = std::min(i + chunkSize, B);
 		auto res = earl->forward(q.slice(0, i, end), kv.slice(0, i, end), m.slice(0, i, end));
-		res = isActor ? actorHead->forward(torch::relu(res)) : criticHead->forward(torch::relu(res));
+		res = headType == HeadType::DISCRETE ? catHead->forward(torch::relu(res))
+			: (criticHead ? criticHead->forward(torch::relu(res)) : contHead->forward(torch::relu(res)));
 		outs.push_back(res.slice(1, 0, 1).squeeze(1));
 	}
 	return torch::cat(outs, 0);

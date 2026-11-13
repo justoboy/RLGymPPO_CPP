@@ -15,7 +15,7 @@ struct RLBotParams {
 
 	std::filesystem::path policyPath; // The path to your trained PPO_POLICY.lt (PerceiverNet)
 	int obsSize; // You can find this from the console when running training
-	PerceiverConfig perceiverConfig; // Must match the Perceiver architecture used in training
+	RLGPC::PerceiverConfig perceiverConfig; // Must match the Perceiver architecture used in training
 	int tickSkip; // Your tick skip
 };
 

@@ -25,13 +25,13 @@ float UpdateExpMovingAvg(float& avg, float x, float decay, int step) {
 // Based on https://github.com/shreyansh26/An-Empirical-Model-of-Large-Batch-Training/blob/master/noise_scale.py
 
 RLGPC::GradNoiseTracker::GradNoiseTracker(int batchSize, int updateInterval, float beta)
-	: batchSize(batchSize), updateInterval(updateInterval), averageDecay(averageDecay) {
+	: batchSize(batchSize), updateInterval(updateInterval), averageDecay(beta) {
 	batchSmall = batchSize;
 	batchBig = batchSize * updateInterval;
 }
 
-void RLGPC::GradNoiseTracker::Update(torch::nn::Sequential& seq) {
-	auto grad = GetAllGrad(seq);
+void RLGPC::GradNoiseTracker::Update(torch::nn::Module& module) {
+	auto grad = GetAllGrad(module);
 	batchesGrad.push_back(grad);
 
 	if ((stepCount % updateInterval) == (updateInterval - 1)) {

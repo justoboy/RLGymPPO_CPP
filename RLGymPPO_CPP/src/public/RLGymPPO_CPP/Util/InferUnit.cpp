@@ -1,6 +1,7 @@
 #include "InferUnit.h"
 
 #include "../../../private/RLGymPPO_CPP/FrameworkTorch.h"
+#include <torch/torch.h>
 #include <torch/csrc/api/include/torch/serialize.h>
 
 using namespace RLGSC;
@@ -9,12 +10,13 @@ using namespace RLGPC;
 RLGPC::InferUnit::InferUnit(
 	OBSBuilder* obsBuilder, ActionParser* actionParser, 
 	std::filesystem::path modelPath, bool isPolicy, const PerceiverConfig& perceiverConfig, bool gpu)
-	: obsBuilder(obsBuilder), actionParser(actionParser) {
+	: obsBuilder(obsBuilder), actionParser(actionParser), isPolicy(isPolicy) {
 
 	RG_LOG("InferUnit():");
 
 	RG_LOG(" > Creating policy/critic...");
-	torch::Device device = gpu ? torch::kCUDA : torch::kCPU;
+	this->device = gpu ? torch::kCUDA : torch::kCPU;
+	torch::Device device = this->device;
 
 	if (isPolicy) {
 		policy = new GaussianPolicy(perceiverConfig, device);
@@ -32,7 +34,7 @@ RLGPC::InferUnit::InferUnit(
 	RG_LOG(" > Loading policy/critic...");
 	try {
 		auto streamIn = std::ifstream(modelPath, std::ios::binary);
-		torch::load(policy ? (torch::nn::Module&)*policy->net : (torch::nn::Module&)*critic, streamIn, device);
+		torch::load(policy ? policy->net.ptr() : critic.ptr(), streamIn, device);
 	} catch (std::exception& e) {
 		RG_ERR_CLOSE(
 			"Failed to load model, checkpoint may be corrupt or of different model arch.\n" <<
@@ -58,20 +60,22 @@ RLGSC::FList2 RLGPC::InferUnit::GetObs(const RLGSC::GameState& state, const RLGS
 	return obsSet;
 }
 
-#define ASSERT_RIGHT_TYPE(name, otherName) \
-if (name == NULL) RG_ERR_CLOSE("InferUnit: Failed to infer the " #name " because this inference unit was created to infer the " #otherName);
+#define ASSERT_IS_POLICY() \
+if (!isPolicy) RG_ERR_CLOSE("InferUnit: Failed to infer the policy because this inference unit was created to infer the critic");
+#define ASSERT_IS_CRITIC() \
+if (isPolicy) RG_ERR_CLOSE("InferUnit: Failed to infer the critic because this inference unit was created to infer the policy");
 
 ActionSet RLGPC::InferUnit::InferPolicyAll(
 	const GameState& state, const ActionSet& prevActions, 
 	bool deterministic
 ) {
 
-	ASSERT_RIGHT_TYPE(policy, critic);
+	ASSERT_IS_POLICY();
 
 	FList2 obsSet = GetObs(state, prevActions);
 	
 	RG_NOGRAD;
-	torch::Tensor inputTen = FLIST2_TO_TENSOR(obsSet).to(policy->device);
+	torch::Tensor inputTen = FLIST2_TO_TENSOR(obsSet).to(device);
 	auto actionResult = policy->GetAction(inputTen, deterministic);
 	auto actionParserInput = TENSOR_TO_FLIST(actionResult.action.cpu().flatten());
 
@@ -82,7 +86,7 @@ Action RLGPC::InferUnit::InferPolicySingle(
 	const PlayerData& player, const GameState& state, const Action& prevAction, 
 	bool deterministic
 ) {
-	ASSERT_RIGHT_TYPE(policy, critic);
+	ASSERT_IS_POLICY();
 
 	FList obs = GetObs(player, state, prevAction);
 
@@ -95,7 +99,7 @@ Action RLGPC::InferUnit::InferPolicySingle(
 	}
 
 	RG_NOGRAD;
-	torch::Tensor inputTen = torch::tensor(obs).to(policy->device);
+	torch::Tensor inputTen = torch::tensor(obs).to(device);
 	auto actionResult = policy->GetAction(inputTen, deterministic);
 	FList actionParserInput = TENSOR_TO_FLIST(actionResult.action.cpu().flatten());
 
@@ -103,21 +107,21 @@ Action RLGPC::InferUnit::InferPolicySingle(
 }
 
 RLGSC::FList RLGPC::InferUnit::InferCriticAll(const RLGSC::GameState& state, const RLGSC::ActionSet& prevActions) {
-	ASSERT_RIGHT_TYPE(critic, policy);
+	ASSERT_IS_CRITIC();
 
 	FList2 obsSet = GetObs(state, prevActions);
 
 	RG_NOGRAD;
-	torch::Tensor inputTen = FLIST2_TO_TENSOR(obsSet).to(critic->device);
+	torch::Tensor inputTen = FLIST2_TO_TENSOR(obsSet).to(device);
 	return TENSOR_TO_FLIST(critic->Forward(inputTen).cpu());
 }
 
 float RLGPC::InferUnit::InferCriticSingle(const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction) {
-	ASSERT_RIGHT_TYPE(critic, policy);
+	ASSERT_IS_CRITIC();
 
 	FList obs = GetObs(player, state, prevAction);
 
 	RG_NOGRAD;
-	torch::Tensor inputTen = torch::tensor(obs).to(critic->device);
+	torch::Tensor inputTen = torch::tensor(obs).to(device);
 	return critic->Forward(inputTen).cpu().item<float>();
 }

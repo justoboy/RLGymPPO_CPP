@@ -1,5 +1,6 @@
 #pragma once
 #include "EARLPerceiver.h"
+#include "../../../public/RLGymPPO_CPP/PPO/PPOLearnerConfig.h" // HeadType, PerceiverConfig
 
 // Mirrors reference.agent.ContinuousControlsHead and reference.agent.PerceiverNet.
 // Module/parameter names match the Python state dicts 1:1 (after the converter strips
@@ -23,15 +24,32 @@ namespace RLGPC {
 
 	TORCH_MODULE(ContinuousControlsHead);
 
+	// Python CategoricalControlsHead: (B,1,256) -> (B,1,nControls,max_bins). One independent
+	// softmax per control channel (the discrete arm of the BC representation A/B). The logits
+	// are padded to the widest channel (max_bins) and sliced per channel at decode time.
+	class CategoricalControlsHeadImpl : public torch::nn::Module {
+	public:
+		torch::nn::Linear logits{nullptr};
+		std::vector<int> nBins; // per-channel class counts (padded to max_bins)
+		int maxBins;
+
+		CategoricalControlsHeadImpl(int inFeatures, const std::vector<int>& nBins);
+
+		torch::Tensor forward(const torch::Tensor& x);
+	};
+
+	TORCH_MODULE(CategoricalControlsHead);
+
 	class PerceiverNetImpl : public torch::nn::Module {
 	public:
 		EARLPerceiver earl{nullptr};
 
-		// Exactly ONE head is registered (as "output"); the other stays unregistered so its
+		// Exactly ONE head is registered (as "output"); the others stay unregistered so their
 		// params never enter the state dict and the loaded dict keys match exactly.
-		torch::nn::Linear criticHead{nullptr};      // critic: output.weight / output.bias
-		ContinuousControlsHead actorHead{nullptr};  // actor:  output.mean.* / output.log_std
-		bool isActor;
+		torch::nn::Linear criticHead{nullptr};          // critic: output.weight / output.bias
+		ContinuousControlsHead contHead{nullptr};       // actor (cont):  output.mean.* / output.log_std
+		CategoricalControlsHead catHead{nullptr};       // actor (disc): output.logits.weight / .bias
+		HeadType headType;
 
 		// Obs layout: flat obs = q(queryFeatures) ++ kv(nTokens*kvFeatures) ++ m(nTokens)
 		int64_t chunkSize;
@@ -42,11 +60,15 @@ namespace RLGPC {
 		// Critic ctor (output = Linear(256,1))
 		PerceiverNetImpl(EARLPerceiver earl, torch::nn::Linear output,
 			int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize = 2048);
-		// Actor ctor (output = ContinuousControlsHead)
+		// Continuous actor ctor (output = ContinuousControlsHead)
 		PerceiverNetImpl(EARLPerceiver earl, ContinuousControlsHead output,
 			int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize = 2048);
+		// Discrete actor ctor (output = CategoricalControlsHead)
+		PerceiverNetImpl(EARLPerceiver earl, CategoricalControlsHead output,
+			int64_t queryFeatures, int64_t kvFeatures, int64_t nTokens, int64_t chunkSize = 2048);
 
-		// One (B, obsSize) flat batch -> (B, outDim) head output (18 for actor, 1 for critic)
+		// One (B, obsSize) flat batch -> head output. CONTINUOUS actor -> (B, 2*nControls);
+		// DISCRETE actor -> (B, nControls, maxBins); critic -> (B, 1).
 		torch::Tensor Forward(const torch::Tensor& flatObs);
 
 		void CopyTo(std::shared_ptr<PerceiverNetImpl> to);

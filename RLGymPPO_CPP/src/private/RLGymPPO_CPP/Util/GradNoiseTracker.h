@@ -1,5 +1,6 @@
 #pragma once
 #include "../FrameworkTorch.h"
+#include <torch/torch.h>
 
 namespace RLGPC {
 	// Based on https://github.com/shreyansh26/An-Empirical-Model-of-Large-Batch-Training/blob/master/noise_scale.py

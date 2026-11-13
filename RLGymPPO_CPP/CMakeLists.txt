@@ -24,8 +24,9 @@ target_compile_definitions(RLGymPPO_CPP PRIVATE -DWITHIN_RLGPC)
 target_include_directories(RLGymPPO_CPP PUBLIC "src/public")
 target_include_directories(RLGymPPO_CPP PRIVATE "src/private")
 
-# Include libtorch
-target_link_libraries(RLGymPPO_CPP PRIVATE "${TORCH_LIBRARIES}")
+# Include libtorch (PUBLIC so consumers that include our public headers, which expose
+# torch::nn::Module types, also get the Torch include dirs on their compile line)
+target_link_libraries(RLGymPPO_CPP PUBLIC "${TORCH_LIBRARIES}")
 
 if (TORCH_CUDA_LIBRARIES)
 	message("Enabling CUDA support...")
@@ -39,6 +40,17 @@ set_target_properties(RLGymPPO_CPP PROPERTIES CXX_STANDARD 20)
 # Include RLGymSim_CPP
 add_subdirectory(RLGymSim_CPP)
 target_link_libraries(RLGymPPO_CPP PUBLIC RLGymSim_CPP)
+
+# Parity gate executable: compiles the model sources directly (no DLL import macros) and
+# links the static sim + Torch, so it can be run standalone to validate C++/Python parity.
+add_executable(ParityGate
+	"${PROJECT_SOURCE_DIR}/../tools/parity_main.cpp"
+	"src/private/RLGymPPO_CPP/Model/EARLPerceiver.cpp"
+	"src/private/RLGymPPO_CPP/Model/PerceiverNet.cpp"
+	"src/private/RLGymPPO_CPP/PPO/GaussianPolicy.cpp")
+target_include_directories(ParityGate PRIVATE "src/public" "src/private")
+target_link_libraries(ParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
+set_target_properties(ParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
 # Include JSON
 #target_include_directories(RLGymPPO_CPP PRIVATE "${PROJECT_SOURCE_DIR}/libsrc/json")
