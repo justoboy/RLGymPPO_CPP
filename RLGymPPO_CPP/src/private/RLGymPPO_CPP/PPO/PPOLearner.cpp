@@ -8,8 +8,8 @@
 
 using namespace torch;
 
-Tensor _CopyParams(nn::Module* mod) {
-	return torch::nn::utils::parameters_to_vector(mod->parameters()).cpu();
+Tensor _CopyParams(nn::Module& mod) {
+	return torch::nn::utils::parameters_to_vector(mod.parameters()).cpu();
 }
 
 void _CopyModelParamsHalf(nn::Module* from, nn::Module* to) {
@@ -26,8 +26,8 @@ void _CopyModelParamsHalf(nn::Module* from, nn::Module* to) {
 	}
 }
 
-RLGPC::PPOLearner::PPOLearner(int obsSpaceSize, int actSpaceSize, PPOLearnerConfig _config, Device _device) 
-	: config(_config), device(_device) {
+RLGPC::PPOLearner::PPOLearner(PPOLearnerConfig _config, Device _device) 
+	: config(_config), device(_device), nControls(_config.perceiver.nControls) {
 
 	if (config.miniBatchSize == 0)
 		config.miniBatchSize = config.batchSize;
@@ -35,23 +35,21 @@ RLGPC::PPOLearner::PPOLearner(int obsSpaceSize, int actSpaceSize, PPOLearnerConf
 	if (config.batchSize % config.miniBatchSize != 0)
 		RG_ERR_CLOSE("PPOLearner: config.batchSize must be a multiple of config.miniBatchSize");
 
-	policy = new DiscretePolicy(obsSpaceSize, actSpaceSize, config.policyLayerSizes, device, config.policyTemperature);
-	valueNet = new ValueEstimator(obsSpaceSize, config.criticLayerSizes, device);
+	// Actor: EARL Perceiver + continuous Gaussian head
+	policy = new GaussianPolicy(config.perceiver, device);
 
-	if (config.halfPrecModels) {
-		policyHalf = new DiscretePolicy(obsSpaceSize, actSpaceSize, config.policyLayerSizes, device);
-		valueNetHalf = new ValueEstimator(obsSpaceSize, config.criticLayerSizes, device);
+	// Critic: EARL Perceiver + Linear(256->1) head
+	EARLPerceiver criticEarl = EARLPerceiver(
+		config.perceiver.nDims, config.perceiver.nHeads, config.perceiver.nLayers,
+		config.perceiver.queryFeatures, config.perceiver.kvFeatures);
+	valueNet = PerceiverNet(
+		criticEarl,
+		torch::nn::Linear(torch::nn::LinearOptions(config.perceiver.nDims, 1)),
+		config.perceiver.queryFeatures, config.perceiver.kvFeatures,
+		config.perceiver.nTokens, config.perceiver.chunkSize);
+	valueNet->to(device, true);
 
-		_CopyModelParamsHalf(policy, policyHalf);
-		_CopyModelParamsHalf(valueNet, valueNetHalf);
-
-		policyHalf->to(RG_HALFPERC_TYPE);
-		valueNetHalf->to(RG_HALFPERC_TYPE);
-	} else {
-		policyHalf = NULL;
-		valueNetHalf = NULL;
-	}
-	policyOptimizer = new optim::Adam(policy->parameters(), optim::AdamOptions(config.policyLR));
+	policyOptimizer = new optim::Adam(policy->net->parameters(), optim::AdamOptions(config.policyLR));
 	valueOptimizer = new optim::Adam(valueNet->parameters(), optim::AdamOptions(config.criticLR));
 	valueLossFn = nn::MSELoss();
 
@@ -93,8 +91,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 	FList clipFractions = {};
 
 	// Save parameters first
-	auto policyBefore = _CopyParams(policy);
-	auto criticBefore = _CopyParams(valueNet);
+	auto policyBefore = _CopyParams(*policy->net);
+	auto criticBefore = _CopyParams(*valueNet);
 
 	bool trainPolicy = config.policyLR != 0;
 	bool trainCritic = config.criticLR != 0;
@@ -144,8 +142,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 				timer.Reset();
 				torch::Tensor logProbs, entropy, ratio, clipped, policyLoss, ppoLoss;
 				if (trainPolicy) {
-					// Get policy log probs & entropy
-					DiscretePolicy::BackpropResult bpResult = policy->GetBackpropData(obs, acts); // 13%
+					// Get policy log probs & entropy (Gaussian policy over the 9 control channels)
+					GaussianPolicy::BackpropResult bpResult = policy->GetBackpropData(obs, acts); // 13%
 
 					logProbs = bpResult.actionLogProbs;
 					entropy = bpResult.entropy;
@@ -265,13 +263,13 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 
 			if (config.measureGradientNoise) {
 				if (trainPolicy)
-					noiseTrackerPolicy->Update(policy->seq);
+					noiseTrackerPolicy->Update(*policy->net);
 				if (trainCritic)
-					noiseTrackerValueNet->Update(valueNet->seq);
+					noiseTrackerValueNet->Update(*valueNet);
 			}
 
 			if (trainPolicy)
-				nn::utils::clip_grad_norm_(policy->parameters(), 0.5f);
+				nn::utils::clip_grad_norm_(policy->net->parameters(), 0.5f);
 			if (trainCritic)
 				nn::utils::clip_grad_norm_(valueNet->parameters(), 0.5f);
 			
@@ -288,11 +286,6 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 					valueOptimizer->step();
 			}
 
-			if (policyHalf)
-				_CopyModelParamsHalf(policy, policyHalf);
-			if (valueNetHalf)
-				_CopyModelParamsHalf(valueNet, valueNetHalf);
-			
 			if (autocast)
 				gradScaler->update();
 			numIterations += 1;
@@ -348,13 +341,12 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 	valueOptimizer->zero_grad();
 }
 
-// Get sizes of all parameters in a sequence
-std::vector<uint64_t> GetSeqSizes(torch::nn::Sequential& seq) {
+// Get sizes of all parameters in a module
+std::vector<uint64_t> GetSeqSizes(torch::nn::Module& module) {
 	std::vector<uint64_t> result = {};
 
-	for (int i = 0; i < seq->size(); i++)
-		for (auto param : seq[i]->parameters())
-			result.push_back(param.numel());
+	for (auto& param : module.parameters())
+		result.push_back(param.numel());
 
 	return result;
 }
@@ -369,7 +361,7 @@ constexpr const char* OPTIM_FILE_NAMES[] = {
 	"PPO_CRITIC_OPTIM.lt",
 };
 
-void TorchLoadSaveSeq(torch::nn::Sequential seq, std::filesystem::path path, c10::Device device, bool load) {
+void TorchLoadSaveSeq(torch::nn::Module& module, std::filesystem::path path, c10::Device device, bool load) {
 	if (load) {
 		auto streamIn = std::ifstream(path, std::ios::binary);
 		streamIn >> std::noskipws;
@@ -377,10 +369,10 @@ void TorchLoadSaveSeq(torch::nn::Sequential seq, std::filesystem::path path, c10
 		if (!streamIn.good())
 			RG_ERR_CLOSE("Failed to load from " << path << ", file does not exist or can't be accessed");
 
-		auto sizesBefore = GetSeqSizes(seq);
+		auto sizesBefore = GetSeqSizes(module);
 
 		try {
-			torch::load(seq, streamIn, device);
+			torch::load(module, streamIn, device);
 		} catch (std::exception& e) {
 			RG_ERR_CLOSE(
 				"Failed to load model, checkpoint may be corrupt or of different model arch.\n" <<
@@ -390,7 +382,7 @@ void TorchLoadSaveSeq(torch::nn::Sequential seq, std::filesystem::path path, c10
 
 		// Torch will happily load in a model of a totally different size, then we will crash when we try to use it
 		// So we need to manually check if it is the same size
-		auto sizesAfter = GetSeqSizes(seq);
+		auto sizesAfter = GetSeqSizes(module);
 		if (!std::equal(sizesBefore.begin(), sizesBefore.end(), sizesAfter.begin(), sizesAfter.end())) {
 			std::stringstream stream;
 			stream << "Saved model has different size than current model, cannot load model from " << path << ":\n";
@@ -410,7 +402,7 @@ void TorchLoadSaveSeq(torch::nn::Sequential seq, std::filesystem::path path, c10
 
 	} else {
 		auto streamOut = std::ofstream(path, std::ios::binary);
-		torch::save(seq, streamOut);
+		torch::save(module, streamOut);
 	}
 }
 
@@ -421,17 +413,10 @@ void TorchLoadSaveAll(RLGPC::PPOLearner* learner, std::filesystem::path folderPa
 			RG_ERR_CLOSE("PPOLearner: Failed to find file \"" << MODEL_FILE_NAMES[0] << "\" in " << folderPath << ".")
 	}
 
-	TorchLoadSaveSeq(learner->policy->seq, folderPath / MODEL_FILE_NAMES[0], learner->device, load);
+	TorchLoadSaveSeq(*learner->policy->net, folderPath / MODEL_FILE_NAMES[0], learner->device, load);
 
 	if (!load || std::filesystem::exists(folderPath / MODEL_FILE_NAMES[1]))
-		TorchLoadSaveSeq(learner->valueNet->seq, folderPath / MODEL_FILE_NAMES[1], learner->device, load);
-
-	if (load) {
-		if (learner->policyHalf)
-			_CopyModelParamsHalf(learner->policy, learner->policyHalf);
-		if (learner->valueNetHalf)
-			_CopyModelParamsHalf(learner->valueNet, learner->valueNetHalf);
-	}
+		TorchLoadSaveSeq(*learner->valueNet, folderPath / MODEL_FILE_NAMES[1], learner->device, load);
 
 	// Load or save optimizers
 	if (load) {
@@ -481,13 +466,13 @@ void RLGPC::PPOLearner::SaveTo(std::filesystem::path folderPath) {
 	TorchLoadSaveAll(this, folderPath, false);
 }
 
-RLGPC::DiscretePolicy* RLGPC::PPOLearner::LoadAdditionalPolicy(std::filesystem::path folderPath) {
+RLGPC::GaussianPolicy* RLGPC::PPOLearner::LoadAdditionalPolicy(std::filesystem::path folderPath) {
 	std::filesystem::path policyPath = folderPath / MODEL_FILE_NAMES[0];
 	if (!std::filesystem::exists(policyPath))
 		return NULL;
 
-	RLGPC::DiscretePolicy* newPolicy = new RLGPC::DiscretePolicy(policy->inputAmount, policy->actionAmount, policy->layerSizes, policy->device);
-	TorchLoadSaveSeq(newPolicy->seq, policyPath, newPolicy->device, true);
+	GaussianPolicy* newPolicy = new GaussianPolicy(config.perceiver, policy->device);
+	TorchLoadSaveSeq(*newPolicy->net, policyPath, newPolicy->device, true);
 	return newPolicy;
 }
 

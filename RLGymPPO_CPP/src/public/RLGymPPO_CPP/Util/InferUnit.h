@@ -3,33 +3,35 @@
 #include "../Threading/GameInst.h"
 #include "../LearnerConfig.h"
 
+// Model types are part of this unit's public surface (the critic member is a PerceiverNet),
+// so the module headers come in via relative include paths.
+#include "../../../private/RLGymPPO_CPP/PPO/GaussianPolicy.h"
+
 namespace RLGPC {
+	// Standalone inference wrapper around the EARL Perceiver actor/critic. Loads a model
+	// saved by PPOLearner::SaveTo (torch::save of the nn::Module) and infers actions/values.
 	class RG_IMEXPORT InferUnit {
 	public:
 
 		RLGSC::OBSBuilder* obsBuilder;
 		RLGSC::ActionParser* actionParser;
-		class DiscretePolicy* policy;
-		class ValueEstimator* critic;
+		class GaussianPolicy* policy;
+		PerceiverNet critic{nullptr};
 
 		InferUnit(
 			RLGSC::OBSBuilder* obsBuilder, RLGSC::ActionParser* actionParser, 
-			std::filesystem::path modelPath, bool isPolicy, int obsSize, const RLGPC::IList& layerSizes, bool gpu = false);
+			std::filesystem::path modelPath, bool isPolicy, const PerceiverConfig& perceiverConfig, bool gpu = false);
 
 		RLGSC::FList GetObs(const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction);
 		RLGSC::FList2 GetObs(const RLGSC::GameState& state, const RLGSC::ActionSet& prevActions);
 
 		RLGSC::ActionSet InferPolicyAll(
 			const RLGSC::GameState& state, const RLGSC::ActionSet& prevActions, 
-			bool deterministic, float temperature = 1.0f
+			bool deterministic
 		);
 		RLGSC::Action InferPolicySingle(
 			const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction, 
-			bool deterministic, float temperature = 1.0f
-		);
-		RLGSC::FList InferPolicySingleDistrib(
-			const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction, 
-			float temperature = 1.0f
+			bool deterministic
 		);
 
 		RLGSC::FList InferCriticAll(
@@ -38,5 +40,7 @@ namespace RLGPC {
 		float InferCriticSingle(
 			const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction
 		);
+
+		~InferUnit();
 	};
 }

@@ -20,9 +20,10 @@ RLBotBot::RLBotBot(int _index, int _team, std::string _name, const RLBotParams& 
 	RG_LOG("Creating RLBot bot: index " << _index << ", name: " << name << "...");
 
 	RG_LOG(" > Loading policy from " << params.policyPath << "...");
-	policyInferUnit = new InferUnit(
-		params.obsBuilder, params.actionParser, params.policyPath, true, params.obsSize, params.policyLayerSizes, false
-	);
+		policyInferUnit = new InferUnit(
+			params.obsBuilder, params.actionParser, params.policyPath, 
+			true, params.perceiverConfig, false
+		);
 
 	RG_LOG(" > Done!");
 }

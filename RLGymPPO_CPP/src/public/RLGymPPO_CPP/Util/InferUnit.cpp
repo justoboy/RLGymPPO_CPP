@@ -1,8 +1,6 @@
 #include "InferUnit.h"
 
-#include <RLGymPPO_CPP/PPO/DiscretePolicy.h>
-#include <RLGymPPO_CPP/PPO/ValueEstimator.h>
-#include <RLGymPPO_CPP/FrameworkTorch.h>
+#include "../../../private/RLGymPPO_CPP/FrameworkTorch.h"
 #include <torch/csrc/api/include/torch/serialize.h>
 
 using namespace RLGSC;
@@ -10,7 +8,7 @@ using namespace RLGPC;
 
 RLGPC::InferUnit::InferUnit(
 	OBSBuilder* obsBuilder, ActionParser* actionParser, 
-	std::filesystem::path modelPath, bool isPolicy, int obsSize, const IList& layerSizes, bool gpu)
+	std::filesystem::path modelPath, bool isPolicy, const PerceiverConfig& perceiverConfig, bool gpu)
 	: obsBuilder(obsBuilder), actionParser(actionParser) {
 
 	RG_LOG("InferUnit():");
@@ -19,16 +17,22 @@ RLGPC::InferUnit::InferUnit(
 	torch::Device device = gpu ? torch::kCUDA : torch::kCPU;
 
 	if (isPolicy) {
-		policy = new DiscretePolicy(obsSize, actionParser->GetActionAmount(), layerSizes, device);
-		critic = NULL;
+		policy = new GaussianPolicy(perceiverConfig, device);
 	} else {
 		policy = NULL;
-		critic = new ValueEstimator(obsSize, layerSizes, device);
+		EARLPerceiver earl = EARLPerceiver(
+			perceiverConfig.nDims, perceiverConfig.nHeads, perceiverConfig.nLayers,
+			perceiverConfig.queryFeatures, perceiverConfig.kvFeatures);
+		critic = PerceiverNet(
+			earl, torch::nn::Linear(torch::nn::LinearOptions(perceiverConfig.nDims, 1)),
+			perceiverConfig.queryFeatures, perceiverConfig.kvFeatures,
+			perceiverConfig.nTokens, perceiverConfig.chunkSize);
+		critic->to(device, true);
 	}
 	RG_LOG(" > Loading policy/critic...");
 	try {
 		auto streamIn = std::ifstream(modelPath, std::ios::binary);
-		torch::load(policy ? policy->seq : critic->seq, streamIn, device);
+		torch::load(policy ? (torch::nn::Module&)*policy->net : (torch::nn::Module&)*critic, streamIn, device);
 	} catch (std::exception& e) {
 		RG_ERR_CLOSE(
 			"Failed to load model, checkpoint may be corrupt or of different model arch.\n" <<
@@ -37,6 +41,10 @@ RLGPC::InferUnit::InferUnit(
 	}
 
 	RG_LOG(" > Done!");
+}
+
+RLGPC::InferUnit::~InferUnit() {
+	delete policy;
 }
 
 RLGSC::FList RLGPC::InferUnit::GetObs(const RLGSC::PlayerData& player, const RLGSC::GameState& state, const RLGSC::Action& prevAction) {
@@ -55,7 +63,7 @@ if (name == NULL) RG_ERR_CLOSE("InferUnit: Failed to infer the " #name " because
 
 ActionSet RLGPC::InferUnit::InferPolicyAll(
 	const GameState& state, const ActionSet& prevActions, 
-	bool deterministic, float temperature
+	bool deterministic
 ) {
 
 	ASSERT_RIGHT_TYPE(policy, critic);
@@ -63,17 +71,16 @@ ActionSet RLGPC::InferUnit::InferPolicyAll(
 	FList2 obsSet = GetObs(state, prevActions);
 	
 	RG_NOGRAD;
-	policy->temperature = temperature;
 	torch::Tensor inputTen = FLIST2_TO_TENSOR(obsSet).to(policy->device);
 	auto actionResult = policy->GetAction(inputTen, deterministic);
-	auto actionParserInput = TENSOR_TO_ILIST(actionResult.action);
+	auto actionParserInput = TENSOR_TO_FLIST(actionResult.action.cpu().flatten());
 
 	return actionParser->ParseActions(actionParserInput, state);
 }
 
 Action RLGPC::InferUnit::InferPolicySingle(
 	const PlayerData& player, const GameState& state, const Action& prevAction, 
-	bool deterministic, float temperature
+	bool deterministic
 ) {
 	ASSERT_RIGHT_TYPE(policy, critic);
 
@@ -88,27 +95,11 @@ Action RLGPC::InferUnit::InferPolicySingle(
 	}
 
 	RG_NOGRAD;
-	policy->temperature = temperature;
 	torch::Tensor inputTen = torch::tensor(obs).to(policy->device);
 	auto actionResult = policy->GetAction(inputTen, deterministic);
-	IList actionParserInput = IList(state.players.size());
-	actionParserInput[playerIndex] = actionResult.action.item<int>();
+	FList actionParserInput = TENSOR_TO_FLIST(actionResult.action.cpu().flatten());
 
 	return actionParser->ParseActions(actionParserInput, state)[playerIndex];
-}
-
-RLGSC::FList RLGPC::InferUnit::InferPolicySingleDistrib(
-	const PlayerData& player, const GameState& state, const Action& prevAction,
-	float temperature
-) {
-	ASSERT_RIGHT_TYPE(policy, critic);
-
-	FList obs = GetObs(player, state, prevAction);
-
-	RG_NOGRAD;
-	policy->temperature = temperature;
-	torch::Tensor inputTen = torch::tensor(obs).to(policy->device);
-	return TENSOR_TO_FLIST(policy->GetActionProbs(inputTen).reshape({ policy->actionAmount }));
 }
 
 RLGSC::FList RLGPC::InferUnit::InferCriticAll(const RLGSC::GameState& state, const RLGSC::ActionSet& prevActions) {

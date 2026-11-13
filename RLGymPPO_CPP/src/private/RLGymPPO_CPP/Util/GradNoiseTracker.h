@@ -1,6 +1,5 @@
 #pragma once
 #include "../FrameworkTorch.h"
-#include <torch/nn/modules/container/sequential.h>
 
 namespace RLGPC {
 	// Based on https://github.com/shreyansh26/An-Empirical-Model-of-Large-Batch-Training/blob/master/noise_scale.py
@@ -24,6 +23,6 @@ namespace RLGPC {
 
 		GradNoiseTracker(int batchSize, int updateInterval, float averageDecay = 0.99f);
 
-		void Update(torch::nn::Sequential& seq);
+		void Update(torch::nn::Module& module);
 	};
 }

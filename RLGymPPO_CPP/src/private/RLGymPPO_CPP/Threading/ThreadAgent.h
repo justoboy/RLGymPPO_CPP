@@ -1,5 +1,5 @@
 #pragma once
-#include "../PPO/DiscretePolicy.h"
+#include "../PPO/GaussianPolicy.h"
 #include <RLGymPPO_CPP/Threading/GameInst.h>
 #include "GameTrajectory.h"
 

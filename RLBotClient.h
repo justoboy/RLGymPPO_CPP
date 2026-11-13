@@ -13,9 +13,9 @@ struct RLBotParams {
 	RLGSC::OBSBuilder* obsBuilder = NULL; // Use your OBS builder
 	RLGSC::ActionParser* actionParser = NULL; // Use your action parser
 
-	std::filesystem::path policyPath; // The path to your trained PPO_POLICY.lt
+	std::filesystem::path policyPath; // The path to your trained PPO_POLICY.lt (PerceiverNet)
 	int obsSize; // You can find this from the console when running training
-	std::vector<int> policyLayerSizes = {}; // Your layer sizes
+	PerceiverConfig perceiverConfig; // Must match the Perceiver architecture used in training
 	int tickSkip; // Your tick skip
 };
 

@@ -85,7 +85,7 @@ void RLGPC::SkillTracker::UpdateRatings(RatingSet& winner, RatingSet& loser, boo
 }
 
 void RunThread(
-	RLGPC::SkillTracker* self, std::vector<RLGPC::SkillTracker::Game*> games, DiscretePolicy* curPolicy, float timePerGame, 
+	RLGPC::SkillTracker* self, std::vector<RLGPC::SkillTracker::Game*> games, GaussianPolicy* curPolicy, float timePerGame, 
 	int threadIdx, std::mutex* ratingMutex, char* done) {
 	constexpr const char* ERR_PREFIX = "RLGPC::SkillTracker RunThread(): ";
 	
@@ -94,7 +94,7 @@ void RunThread(
 		auto& gameInst = game.gameInst;
 		gameInst->stepCallback = self->config.stepCallback;
 
-		DiscretePolicy* oldPolicy = self->oldPolicies[game.oldPolicyIndex];
+		GaussianPolicy* oldPolicy = self->oldPolicies[game.oldPolicyIndex];
 		int tickSkip = gameInst->gym->tickSkip;
 		int numSteps = timePerGame * 120 / tickSkip;
 		if (numSteps <= 0)
@@ -115,19 +115,18 @@ void RunThread(
 			auto blueObs = FLIST2_TO_TENSOR(teamObsSets[0]).to(bluePolicy->device);
 			auto orangeObs = FLIST2_TO_TENSOR(teamObsSets[1]).to(orangePolicy->device);
 
-			auto blueActions = TENSOR_TO_ILIST(bluePolicy->GetAction(blueObs, 1).action);
-			auto orangeActions = TENSOR_TO_ILIST(orangePolicy->GetAction(orangeObs, 1).action);
+			auto blueActions = bluePolicy->GetAction(blueObs, 1).action.cpu();
+			auto orangeActions = orangePolicy->GetAction(orangeObs, 1).action.cpu();
 
-			IList allActions = {};
+			// Each action row is the player's N_CONTROLS control floats; concatenate them
+			// back into flat per-player order for the continuous action parser
+			FList allActions = {};
 			for (int j = 0, blueIdx = 0, orangeIdx = 0; j < gameInst->match->playerAmount; j++) {
 				Team playerTeam = gameInst->gym->prevState.players[j].team;
-				if (playerTeam == Team::BLUE) {
-					allActions.push_back(blueActions[blueIdx]);
-					blueIdx++;
-				} else {
-					allActions.push_back(orangeActions[orangeIdx]);
-					orangeIdx++;
-				}
+				torch::Tensor row = (playerTeam == Team::BLUE)
+					? blueActions[blueIdx++] : orangeActions[orangeIdx++];
+				float* data = row.data_ptr<float>();
+				allActions.insert(allActions.end(), data, data + row.size(0));
 			}
 
 			auto stepResult = gameInst->Step(allActions);
@@ -162,7 +161,7 @@ void RunThread(
 	*done = true;
 }
 
-void RLGPC::SkillTracker::RunGames(DiscretePolicy* curPolicy, int64_t timestepsDelta) {
+void RLGPC::SkillTracker::RunGames(GaussianPolicy* curPolicy, int64_t timestepsDelta) {
 	constexpr const char* ERR_PREFIX = "RLGPC::SkillTracker::RunGames(): ";
 
 	if (runCounter % config.updateInterval != 0) {
@@ -173,8 +172,7 @@ void RLGPC::SkillTracker::RunGames(DiscretePolicy* curPolicy, int64_t timestepsD
 	}
 
 	if (oldPolicies.empty() && config.startWithVersion) {
-		DiscretePolicy* newOldPolicy = new DiscretePolicy(curPolicy->inputAmount, curPolicy->actionAmount, curPolicy->layerSizes, curPolicy->device);
-		curPolicy->CopyTo(*newOldPolicy);
+		GaussianPolicy* newOldPolicy = curPolicy->Clone();
 		oldPolicies.push_back(newOldPolicy);
 		oldRatings.push_back(curRating);
 	}
@@ -243,8 +241,7 @@ void RLGPC::SkillTracker::RunGames(DiscretePolicy* curPolicy, int64_t timestepsD
 		timestepsSinceVersionMade = 0;
 
 		// Add current policy as previous version
-		DiscretePolicy* newOldPolicy = new DiscretePolicy(curPolicy->inputAmount, curPolicy->actionAmount, curPolicy->layerSizes, curPolicy->device);
-		curPolicy->CopyTo(*newOldPolicy);
+		GaussianPolicy* newOldPolicy = curPolicy->Clone();
 		oldPolicies.push_back(newOldPolicy);
 		oldRatings.push_back(curRating);
 

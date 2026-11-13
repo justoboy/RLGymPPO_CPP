@@ -47,8 +47,8 @@ namespace RLGPC {
 			_metrics.Clear();
 		}
 
-		void Start();
-		RLGSC::Gym::StepResult Step(const IList& actions);
+	void Start();
+	RLGSC::Gym::StepResult Step(const FList& actions);
 
 		~GameInst() {
 			delete gym;

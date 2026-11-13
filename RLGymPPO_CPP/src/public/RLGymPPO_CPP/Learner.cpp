@@ -109,15 +109,29 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 		delete envCreateResult.match;
 	}
 
+	// The Perceiver's obs layout must match the actual flat obs width from the env
+	if (config.ppo.perceiver.queryFeatures
+		+ config.ppo.perceiver.nTokens * config.ppo.perceiver.kvFeatures
+		+ config.ppo.perceiver.nTokens != (int)obsSize)
+		RG_ERR_CLOSE(
+			"Learner: PerceiverConfig obs layout (" << config.ppo.perceiver.queryFeatures << " + "
+			<< config.ppo.perceiver.nTokens << "*" << config.ppo.perceiver.kvFeatures << " + "
+			<< config.ppo.perceiver.nTokens << " = "
+			<< (config.ppo.perceiver.queryFeatures + config.ppo.perceiver.nTokens * config.ppo.perceiver.kvFeatures + config.ppo.perceiver.nTokens)
+			<< ") does not match env obs size " << obsSize << "; fix LearnerConfig.ppo.perceiver"
+		);
+	if (config.ppo.perceiver.nControls != actionAmount)
+		RG_ERR_CLOSE("Learner: PerceiverConfig.nControls (" << config.ppo.perceiver.nControls << ") != env action amount " << actionAmount);
+
 	RG_LOG("\tCreating experience buffer...");
 	expBuffer = new ExperienceBuffer(config.expBufferSize, config.randomSeed, device);
 
 	RG_LOG("\tCreating PPO Learner...");
-	ppo = new PPOLearner(obsSize, actionAmount, config.ppo, device);
+	ppo = new PPOLearner(config.ppo, device);
 
 	RG_LOG("\tCreating agent manager...");
 	agentMgr = new ThreadAgentManager(
-		ppo->policy, ppo->policyHalf, expBuffer, 
+		ppo->policy, expBuffer,
 		config.standardizeOBS, config.deterministic, device.is_cpu() && torch::get_num_threads() > 1,
 		(uint64_t)(config.timestepsPerIteration * 1.5f),
 		device
@@ -705,20 +719,6 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 
 void RLGPC::Learner::UpdateLearningRates(float policyLR, float criticLR) {
 	ppo->UpdateLearningRates(policyLR, criticLR);
-}
-
-void RLGPC::Learner::SetActionEntropyScales(RLGSC::FList newVals) {
-	RG_ASSERT(newVals.size() == actionAmount);
-	ppo->policy->actionEntropyScales = torch::tensor(newVals, ppo->policy->device);
-	if (ppo->policyHalf)
-		ppo->policyHalf->actionEntropyScales = torch::tensor(newVals, ppo->policy->device);
-}
-
-void RLGPC::Learner::SetActionProbBonuses(RLGSC::FList newVals) {
-	RG_ASSERT(newVals.size() == actionAmount);
-	ppo->policy->actionProbBonuses = torch::tensor(newVals, ppo->policy->device);
-	if (ppo->policyHalf)
-		ppo->policyHalf->actionProbBonuses = torch::tensor(newVals, ppo->policy->device);
 }
 
 std::vector<RLGPC::Report> RLGPC::Learner::GetAllGameMetrics() {

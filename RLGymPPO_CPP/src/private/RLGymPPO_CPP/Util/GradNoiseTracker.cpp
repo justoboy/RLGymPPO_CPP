@@ -2,10 +2,10 @@
 
 // Based on https://github.com/shreyansh26/An-Empirical-Model-of-Large-Batch-Training/blob/master/utils.py
 
-torch::Tensor GetAllGrad(torch::nn::Sequential seq) {
+torch::Tensor GetAllGrad(torch::nn::Module& module) {
 	std::vector<torch::Tensor> grads = {};
 
-	auto params = seq->parameters();
+	auto params = module.parameters();
 	for (auto& param : params) {
 		auto& grad = param.grad();
 		if (!grad.defined())

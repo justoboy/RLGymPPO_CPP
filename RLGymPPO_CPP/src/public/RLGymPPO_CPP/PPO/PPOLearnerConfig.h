@@ -2,14 +2,34 @@
 #include "../Lists.h"
 
 namespace RLGPC {
+	// Architecture of the EARL Perceiver actor/critic. The obs layout describes how the
+	// FLAT per-player obs (built by the sim's TemporalObsBuilder) is sliced back into the
+	// (q, kv, mask) tuple the Perceiver consumes:
+	//   flat obs = q(queryFeatures) ++ kv(nTokens * kvFeatures) ++ m(nTokens)
+	// Defaults match reference's main BotSpec (profile=True): entity_features=39,
+	// query_features=208, kv_features=69, 151 temporal slots (13 frames x 11 cars + 34 pads).
+	struct PerceiverConfig {
+		int nDims = 256;   // latent/embedding width
+		int nHeads = 4;    // attention heads
+		int nLayers = 8;   // cross-attention blocks
+		int nControls = 9; // continuous control channels (throttle..release)
+
+		// Obs tuple layout (must match the sim's TemporalObsBuilder output)
+		int queryFeatures = 208; // entity(39) + direct-ball(12) + tactical(3) + mode(1) + mode-fields(11) + tiles(140) + team-size(2)
+		int kvFeatures = 69;     // entity features (39) + relative block (30)
+		int nTokens = 151;       // temporal slots (13 frames x 11 cars + 34 boost pads)
+
+		int64_t chunkSize = 2048; // PerceiverNet forward chunking (VRAM bound)
+	};
+
 	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/ppo_learner.py
 	struct PPOLearnerConfig {
-		IList policyLayerSizes = { 256, 256, 256 };
-		IList criticLayerSizes = { 256, 256, 256 };
+		PerceiverConfig perceiver = {};
+
 		int64_t batchSize = 50 * 1000;
 		int epochs = 10;
-		float policyLR = 3e-4f; // Policy learning rate
-		float criticLR = 3e-4f; // Critic learning rate
+		float policyLR = 1e-4f; // Policy learning rate (reference BC used AdamW 1e-4)
+		float criticLR = 1e-4f; // Critic learning rate
 		float entCoef = 0.005f; // Entropy coefficient
 		float clipRange = 0.2f;
 		int64_t miniBatchSize = 0; // Set to 0 to just use batchSize
@@ -20,9 +40,6 @@ namespace RLGPC {
 
 		// Very experimental, uses half-precision versions of models where beneficial
 		bool halfPrecModels = false;
-
-		// Temperature of the policy's softmax distribution
-		float policyTemperature = 1;
 
 		// https://openai.com/index/how-ai-training-scales/
 		// Measures the noise of both policy and critic gradients every epoch

@@ -2,7 +2,7 @@
 #include "../FrameworkTorch.h"
 #include "../../../public/RLGymPPO_CPP/Util/SkillTrackerConfig.h"
 #include "../../../public/RLGymPPO_CPP/Util/RenderSender.h"
-#include "../PPO/DiscretePolicy.h"
+#include "../PPO/GaussianPolicy.h"
 
 #include "../../libsrc/json/nlohmann/json.hpp"
 
@@ -37,7 +37,7 @@ namespace RLGPC {
 
 		RatingSet LoadRatingSet(const nlohmann::json& json, bool warn = true);
 
-		std::vector<DiscretePolicy*> oldPolicies;
+		std::vector<GaussianPolicy*> oldPolicies;
 		std::vector<RatingSet> oldRatings;
 		int64_t timestepsSinceVersionMade = 0;
 
@@ -51,11 +51,11 @@ namespace RLGPC {
 
 		RG_NO_COPY(SkillTracker);
 
-		void RunGames(DiscretePolicy* curPolicy, int64_t timestepsDelta);
+		void RunGames(GaussianPolicy* curPolicy, int64_t timestepsDelta);
 
 		void UpdateRatings(RatingSet& winner, RatingSet& loser, bool updateWinner, bool updateLoser, std::string mode);
 
-		void AppendOldPolicy(DiscretePolicy* policy, RatingSet rating) {
+		void AppendOldPolicy(GaussianPolicy* policy, RatingSet rating) {
 			oldPolicies.push_back(policy);
 			oldRatings.push_back(rating);
 		}

@@ -9,7 +9,7 @@
 namespace RLGPC {
 	class ThreadAgentManager {
 	public:
-		DiscretePolicy* policy, *policyHalf;
+		GaussianPolicy* policy;
 		std::vector<ThreadAgent*> agents;
 		ExperienceBuffer* expBuffer;
 		std::mutex expBufferMutex = {};
@@ -31,10 +31,10 @@ namespace RLGPC {
 		WelfordRunningStat obsStats;
 
 		ThreadAgentManager(
-			DiscretePolicy* policy, DiscretePolicy* policyHalf, ExperienceBuffer* expBuffer, 
+			GaussianPolicy* policy, ExperienceBuffer* expBuffer,
 			bool standardizeOBS, bool deterministic, bool blockConcurrentInfer, uint64_t maxCollect, torch::Device device) :
-			policy(policy), policyHalf(policyHalf), expBuffer(expBuffer), 
-			standardizeOBS(standardizeOBS), deterministic(deterministic), blockConcurrentInfer(blockConcurrentInfer), 
+			policy(policy), expBuffer(expBuffer),
+			standardizeOBS(standardizeOBS), deterministic(deterministic), blockConcurrentInfer(blockConcurrentInfer),
 			maxCollect(maxCollect), device(device) {}
 
 		RG_NO_COPY(ThreadAgentManager);

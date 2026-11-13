@@ -47,13 +47,9 @@ void _RunFunc(ThreadAgent* ta) {
 	// Will stores our current observations for all our games
 	torch::Tensor curObsTensor = MakeGamesOBSTensor(games);
 
-#if 0 // TODO: Potential cause of learning errors
-	bool halfPrec = mgr->policyHalf != NULL;
-#else
 	constexpr bool halfPrec = false;
-#endif
 
-	auto policy = (halfPrec ? mgr->policyHalf : mgr->policy);
+	auto policy = mgr->policy;
 
 	while (ta->shouldRun) {
 
@@ -82,7 +78,7 @@ void _RunFunc(ThreadAgent* ta) {
 
 		if (blockConcurrentInfer)
 			mgr->inferMutex.lock();
-		RLGPC::DiscretePolicy::ActionResult actionResults;
+		RLGPC::GaussianPolicy::ActionResult actionResults;
 		try {
 			actionResults = policy->GetAction(curObsTensorDevice, deterministic);
 		} catch (std::exception& e) {
@@ -112,7 +108,8 @@ void _RunFunc(ThreadAgent* ta) {
 			// So we will need to slice the section of it that is for this game
 			auto actionSlice = actionResults.action.slice(0, actionsOffset, actionsOffset + numPlayers);
 
-			stepResults[i] = game->Step(TENSOR_TO_ILIST(actionSlice));
+			// Flatten (numPlayers, nControls) -> flat FList for the continuous action parser
+			stepResults[i] = game->Step(TENSOR_TO_FLIST(actionSlice.flatten()));
 
 			actionsOffset += numPlayers;
 		}

@@ -4,7 +4,7 @@ void RLGPC::GameInst::Start() {
 	curObs = gym->Reset();
 }
 
-RLGSC::Gym::StepResult RLGPC::GameInst::Step(const IList& actions) {
+RLGSC::Gym::StepResult RLGPC::GameInst::Step(const FList& actions) {
 
 	// Step with agent actions
 	auto stepResult = gym->Step(actions);
