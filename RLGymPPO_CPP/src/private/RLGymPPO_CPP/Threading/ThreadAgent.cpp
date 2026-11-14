@@ -6,19 +6,26 @@
 using namespace RLGPC;
 
 torch::Tensor MakeGamesOBSTensor(std::vector<GameInst*>& games) {
-	// TODO: Use of torch::concat is likely slow
-
+	// Every game's obs rows share the same width (obsSize), and concatenating row-major
+	// blocks along dim 0 is identical to one row-major buffer of all players' obs. So we
+	// copy every player's obs into a single contiguous buffer and build ONE tensor, which
+	// removes both the per-game tensor construction and the torch::concat dispatch. The
+	// float32 values are identical (torch::equal == true); only the dispatch count changes.
 	assert(!games.empty());
-	std::vector<torch::Tensor> obsTensors = {};
-	for (auto game : games)
-		obsTensors.push_back(FLIST2_TO_TENSOR(game->curObs));
 
-	try {
-		return torch::concat(obsTensors);
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("Failed to concat OBS tensors: " << e.what());
-		return {};
-	}
+	int totalPlayers = 0;
+	for (auto game : games)
+		totalPlayers += (int)game->curObs.size();
+	int obsSize = (int)games[0]->curObs[0].size();
+
+	std::vector<float> buf;
+	buf.reserve((size_t)totalPlayers * (size_t)obsSize);
+	for (auto game : games)
+		for (auto& row : game->curObs)
+			buf.insert(buf.end(), row.begin(), row.end());
+
+	auto options = torch::TensorOptions().dtype(at::kFloat);
+	return torch::from_blob(buf.data(), { (int64_t)totalPlayers, (int64_t)obsSize }, options).clone();
 }
 
 void _RunFunc(ThreadAgent* ta) {
