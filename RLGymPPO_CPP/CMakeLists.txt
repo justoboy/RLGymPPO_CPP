@@ -52,6 +52,11 @@ target_include_directories(ParityGate PRIVATE "src/public" "src/private")
 target_link_libraries(ParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
 set_target_properties(ParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
+# Standalone microbenchmark for the obs->tensor conversion hot path (Tier A candidate).
+add_executable(obsbench "${PROJECT_SOURCE_DIR}/../tools/obsbench.cpp")
+target_link_libraries(obsbench PUBLIC "${TORCH_LIBRARIES}")
+set_target_properties(obsbench PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+
 # Include JSON
 #target_include_directories(RLGymPPO_CPP PRIVATE "${PROJECT_SOURCE_DIR}/libsrc/json")
 

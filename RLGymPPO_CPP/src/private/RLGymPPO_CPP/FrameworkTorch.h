@@ -23,16 +23,25 @@ at::autocast::set_enabled(false); \
 #define RG_HALFPERC_TYPE torch::ScalarType::BFloat16
 
 namespace RLGPC {
-	// Method from: https://stackoverflow.com/questions/63466847/how-is-it-possible-to-convert-a-stdvectorstdvectordouble-to-a-torchten
+	// Convert a (rows, cols) nested float list into a (rows, cols) float32 tensor.
+	//
+	// The previous implementation allocated a zero tensor and then issued one
+	// slice()/copy_ ATen dispatch PER ROW, which is dispatch-bound (the C++ analogue of
+	// the old reference obs-builder bottleneck). Since every row is contiguous and the
+	// output is row-major contiguous, we copy all rows into one contiguous buffer and
+	// build the tensor in a single from_blob().clone(). The float32 values are identical
+	// (torch::equal == true); only the number of ATen dispatches changes.
 	inline torch::Tensor FLIST2_TO_TENSOR(const FList2& list) {
-		int innerSize = list[0].size();
-		auto options = torch::TensorOptions().dtype(at::kFloat);
-		auto tensor = torch::zeros({ (int)list.size(), innerSize }, options);
-		for (int i = 0; i < list.size(); i++)
-			// Torch needs the input array to be non-const for whatever reason
-			tensor.slice(0, i, i + 1) = torch::from_blob((float*)list[i].data(), { innerSize }, options);
+		int rows = (int)list.size();
+		int innerSize = (rows > 0) ? (int)list[0].size() : 0;
 
-		return tensor;
+		std::vector<float> buf;
+		buf.reserve((size_t)rows * (size_t)innerSize);
+		for (auto& row : list)
+			buf.insert(buf.end(), row.begin(), row.end());
+
+		auto options = torch::TensorOptions().dtype(at::kFloat);
+		return torch::from_blob(buf.data(), { (int64_t)rows, (int64_t)innerSize }, options).clone();
 	}
 
 	inline FList TENSOR_TO_FLIST(torch::Tensor tensor) {
