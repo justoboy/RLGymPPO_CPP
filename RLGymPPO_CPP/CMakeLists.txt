@@ -47,6 +47,7 @@ add_executable(ParityGate
 	"${PROJECT_SOURCE_DIR}/../tools/parity_main.cpp"
 	"src/private/RLGymPPO_CPP/Model/EARLPerceiver.cpp"
 	"src/private/RLGymPPO_CPP/Model/PerceiverNet.cpp"
+	"src/private/RLGymPPO_CPP/Model/FSPNet.cpp"
 	"src/private/RLGymPPO_CPP/PPO/GaussianPolicy.cpp")
 target_include_directories(ParityGate PRIVATE "src/public" "src/private")
 target_link_libraries(ParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)

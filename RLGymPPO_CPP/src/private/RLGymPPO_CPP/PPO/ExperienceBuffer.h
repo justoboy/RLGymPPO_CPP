@@ -12,10 +12,15 @@ namespace RLGPC {
 			debugCounters,
 #endif
 
-			nextStates, dones, truncated, values, advantages;
+			nextStates, dones, truncated, values, advantages,
+
+			// FSP auxiliary: per-step target (entityFeatures wide, the next obs's self-entity
+			// block) + mask (1 when the step is NOT an episode end, else 0). Appended last so the
+			// positional begin()/end() iteration in SubmitExperience/_GetSamples carries them.
+			fspTarget, fspMask;
 
 		torch::Tensor* begin() { return &states; }
-		torch::Tensor* end() { return &advantages + 1; }
+		torch::Tensor* end() { return &fspMask + 1; }
 	};
 
 	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/experience_buffer.py
@@ -37,7 +42,7 @@ namespace RLGPC {
 		void SubmitExperience(ExperienceTensors& data);
 
 		struct SampleSet {
-			torch::Tensor actions, logProbs, states, values, advantages;
+			torch::Tensor actions, logProbs, states, values, advantages, fspTarget, fspMask;
 		};
 		SampleSet _GetSamples(const int64_t* indices, size_t size) const;
 

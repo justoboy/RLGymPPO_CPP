@@ -1,5 +1,6 @@
 #pragma once
 #include "../PPO/GaussianPolicy.h";
+#include "../Model/FSPNet.h";
 #include "ExperienceBuffer.h";
 #include <RLGymPPO_CPP/Util/Report.h>
 #include <RLGymPPO_CPP/Util/Timer.h>
@@ -20,7 +21,14 @@ namespace RLGPC {
 	public:
 		GaussianPolicy* policy;
 		PerceiverNet valueNet{nullptr};
-		torch::optim::Adam *policyOptimizer, *valueOptimizer;
+
+		// FSP auxiliary head (optional; active when config.lambdaFSP != 0). It holds the SAME
+		// EARLPerceiver trunk instance the actor uses (policy->net->earl), so the auxiliary
+		// gradient flows into the shared encoder. Only the head's own Linear params get the
+		// dedicated fspOptimizer; the shared trunk stays in policyOptimizer (mirrors agent.py).
+		FSPNet fsp{nullptr};
+
+		torch::optim::Adam *policyOptimizer, *valueOptimizer, *fspOptimizer;
 		torch::nn::MSELoss valueLossFn;
 
 		GradNoiseTracker* noiseTrackerPolicy, *noiseTrackerValueNet;

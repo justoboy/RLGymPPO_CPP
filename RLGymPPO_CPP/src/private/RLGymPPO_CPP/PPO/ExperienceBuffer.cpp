@@ -27,6 +27,11 @@ void RLGPC::ExperienceBuffer::SubmitExperience(ExperienceTensors& _data) {
 		Tensor& ourTen = *itr1;
 		Tensor& addTen = *itr2;
 
+		// FSP target/mask are only populated when the FSP head is active (lambdaFSP != 0). When it's
+		// disabled those fields stay undefined and are skipped (single-bot BC->RL keeps the 7-field path).
+		if (!addTen.defined())
+			continue;
+
 		int64_t addAmount = addTen.size(0);
 
 		if (addAmount > maxSize) {
@@ -100,6 +105,12 @@ RLGPC::ExperienceBuffer::SampleSet RLGPC::ExperienceBuffer::_GetSamples(const in
 	result.states = torch::index_select(data.states, 0, tIndices);
 	result.values = torch::index_select(data.values, 0, tIndices);
 	result.advantages = torch::index_select(data.advantages, 0, tIndices);
+	// FSP auxiliary: only present when the FSP head is active (lambdaFSP != 0). When disabled the
+	// tensors are undefined; index_select on an undefined tensor would throw, so guard on defined().
+	if (data.fspTarget.defined())
+		result.fspTarget = torch::index_select(data.fspTarget, 0, tIndices);
+	if (data.fspMask.defined())
+		result.fspMask = torch::index_select(data.fspMask, 0, tIndices);
 	return result;
 }
 

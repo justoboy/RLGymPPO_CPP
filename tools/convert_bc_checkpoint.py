@@ -96,17 +96,25 @@ def convert(in_path: str, out_folder: str) -> None:
 
     actor_sd = _strip_net_prefix(ck["actor_state_dict"])
     critic_sd = dict(ck.get("critic_state_dict", {}))  # already un-prefixed; may be absent
+    # FSP head state_dict is already un-prefixed (earl.* / head.weight / head.bias); the C++ FSPNet
+    # registers the SAME shared earl trunk plus a `head` Linear, so keys map 1:1. Absent when the
+    # source checkpoint predates FSP (single-bot BC->RL), in which case we emit no FSP blob.
+    fsp_sd = dict(ck.get("fsp_state_dict", {}))
 
     policy_path = os.path.join(out_folder, "PPO_POLICY.lt")
     _write_blob(policy_path, actor_sd)
     critic_path = os.path.join(out_folder, "PPO_CRITIC.lt")
     if critic_sd:
         _write_blob(critic_path, critic_sd)
+    fsp_path = os.path.join(out_folder, "PPO_FSP.lt")
+    if fsp_sd:
+        _write_blob(fsp_path, fsp_sd)
 
     # Round-trip: reload and hash-compare against the source tensors.
     for label, path, src in (
         ("actor", policy_path, actor_sd),
         ("critic", critic_path, critic_sd),
+        ("fsp", fsp_path, fsp_sd),
     ):
         if not src:
             continue

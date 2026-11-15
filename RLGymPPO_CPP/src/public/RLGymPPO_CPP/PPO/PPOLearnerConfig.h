@@ -39,6 +39,11 @@ namespace RLGPC {
 		int kvFeatures = 69;     // entity features (39) + relative block (30)
 		int nTokens = 151;       // temporal slots (13 frames x 11 cars + 34 boost pads)
 
+		// FSP auxiliary head output width (the self-entity feature block width the head predicts).
+		// Mirrors reference BotSpec.entity_features (39 when profile on). The FSP target is the
+		// first entityFeatures columns of the next obs's query block.
+		int entityFeatures = 39;
+
 		int64_t chunkSize = 2048; // PerceiverNet forward chunking (VRAM bound)
 	};
 
@@ -53,6 +58,10 @@ namespace RLGPC {
 		float entCoef = 0.005f; // Entropy coefficient
 		float clipRange = 0.2f;
 		int64_t miniBatchSize = 0; // Set to 0 to just use batchSize
+
+		// FSP auxiliary-loss coefficient (reference run_ppo_update lambda_fsp). 0 disables the FSP
+		// head entirely (no head built, no FSP loss term) so single-bot BC->RL stays byte-identical.
+		float lambdaFSP = 1.0f;
 
 		// Experimental, improves PPO learn speed
 		// If this causes your learning to collapse, please let me know

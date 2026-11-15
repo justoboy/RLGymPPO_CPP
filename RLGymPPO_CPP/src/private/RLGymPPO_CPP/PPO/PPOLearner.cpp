@@ -53,6 +53,22 @@ RLGPC::PPOLearner::PPOLearner(PPOLearnerConfig _config, Device _device)
 	valueOptimizer = new optim::Adam(valueNet->parameters(), optim::AdamOptions(config.criticLR));
 	valueLossFn = nn::MSELoss();
 
+	// FSP auxiliary head: shares the actor's EARLPerceiver trunk instance (policy->net->earl) so the
+	// auxiliary gradient trains the same encoder the actor uses. Only the head's own Linear params get
+	// the dedicated fspOptimizer; the shared trunk stays in policyOptimizer (mirrors agent.py:346-350).
+	// When lambdaFSP == 0 the head is never built and fspOptimizer is a no-op (single-bot BC->RL stays
+	// byte-identical to the pre-FSP learner).
+	if (config.lambdaFSP != 0) {
+		fsp = FSPNet(
+			policy->net->earl, config.perceiver.entityFeatures,
+			config.perceiver.queryFeatures, config.perceiver.kvFeatures,
+			config.perceiver.nTokens, config.perceiver.chunkSize);
+		fsp->to(device, true);
+		fspOptimizer = new optim::Adam(fsp->head->parameters(), optim::AdamOptions(config.policyLR));
+	} else {
+		fspOptimizer = NULL;
+	}
+
 	if (config.measureGradientNoise) {
 		noiseTrackerPolicy = new GradNoiseTracker(config.batchSize, config.gradientNoiseUpdateInterval, config.gradientNoiseAvgDecay);
 		noiseTrackerValueNet = new GradNoiseTracker(config.batchSize, config.gradientNoiseUpdateInterval, config.gradientNoiseAvgDecay);
@@ -87,7 +103,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 		meanEntropy = 0,
 		meanDivergence = 0,
 		meanValLoss = 0,
-		meanRatio = 0;
+		meanRatio = 0,
+		meanFSP = 0;
 	FList clipFractions = {};
 
 	// Save parameters first
@@ -96,6 +113,7 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 
 	bool trainPolicy = config.policyLR != 0;
 	bool trainCritic = config.criticLR != 0;
+	bool trainFSP = fsp && config.lambdaFSP != 0;
 
 	Timer totalTimer = {};
 	for (int epoch = 0; epoch < config.epochs; epoch++) {
@@ -109,10 +127,14 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 			auto batchObs = batch.states;
 			auto batchTargetValues = batch.values;
 			auto batchAdvantages = batch.advantages;
+			auto batchFspTarget = batch.fspTarget;
+			auto batchFspMask = batch.fspMask;
 
 			batchActs = batchActs.view({ config.batchSize, -1 });
 			policyOptimizer->zero_grad();
 			valueOptimizer->zero_grad();
+			if (trainFSP)
+				fspOptimizer->zero_grad();
 
 			// https://stackoverflow.com/questions/30297465/wait-for-all-threads-in-c
 			std::mutex threadLockMutex;
@@ -131,6 +153,12 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 				auto advantages = batchAdvantages.slice(0, start, stop).to(device, true, true);
 				auto oldProbs = batchOldProbs.slice(0, start, stop).to(device, true, true);
 				auto targetValues = batchTargetValues.slice(0, start, stop).to(device, true, true);
+
+				torch::Tensor fspTgt, fspMsk;
+				if (trainFSP) {
+					fspTgt = batchFspTarget.slice(0, start, stop).to(device, true, true);
+					fspMsk = batchFspMask.slice(0, start, stop).to(device, true, true);
+				}
 
 				Timer timer = {};
 				if (autocast) RG_AUTOCAST_ON();
@@ -176,6 +204,22 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 					valueLoss = valueLossFn(vals, targetValues) * batchSizeRatio;
 				}
 
+				// FSP auxiliary loss (mirrors fsp.py:224-226): per-sample smooth_l1 over the feature
+				// dim (mean), masked sum over the batch / mask.sum().clamp(min=1). fspRaw is the raw
+				// (unscaled) loss reported as "FSP Loss" (comparable to Python's ppo/fsp_loss); the
+				// gradient term additionally scales by lambdaFSP * batchSizeRatio (the C++ analogue of
+				// Python's lambda_fsp * fsp_loss / n_minibatches).
+				torch::Tensor fspRaw, fspLoss;
+				if (trainFSP) {
+					auto fspPred = fsp->Forward(obs); // (mb, entityFeatures)
+					auto perSample = torch::nn::functional::smooth_l1_loss(
+						fspPred, fspTgt,
+						torch::nn::functional::SmoothL1LossFuncOptions().reduction(torch::kNone)
+					).mean(-1); // (mb,)
+					fspRaw = (perSample * fspMsk).sum() / fspMsk.sum().clamp(1.0);
+					fspLoss = fspRaw * config.lambdaFSP * batchSizeRatio;
+				}
+
 				if (autocast) RG_AUTOCAST_OFF();
 
 				float kl;
@@ -205,11 +249,15 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 						gradScaler->scale(ppoLoss).backward();
 					if (trainCritic)
 						gradScaler->scale(valueLoss).backward();
+					if (trainFSP)
+						gradScaler->scale(fspLoss).backward();
 				} else {
 					if (trainPolicy)
 						ppoLoss.backward(); // 29%
 					if (trainCritic)
 						valueLoss.backward(); // 24%
+					if (trainFSP)
+						fspLoss.backward();
 				}
 
 				threadUpdateMutex.lock();
@@ -222,6 +270,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 						meanDivergence += kl;
 						meanEntropy += entropy.cpu().detach().item<float>();
 					}
+					if (trainFSP)
+						meanFSP += fspRaw.cpu().detach().item<float>();
 					numMinibatchIterations += 1;
 				}
 				threadUpdateMutex.unlock();
@@ -272,6 +322,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 				nn::utils::clip_grad_norm_(policy->net->parameters(), 0.5f);
 			if (trainCritic)
 				nn::utils::clip_grad_norm_(valueNet->parameters(), 0.5f);
+			if (trainFSP)
+				nn::utils::clip_grad_norm_(fsp->head->parameters(), 0.5f);
 			
 
 			if (autocast) {
@@ -279,11 +331,15 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 					gradScaler->step(*policyOptimizer);
 				if (trainCritic)
 					gradScaler->step(*valueOptimizer);
+				if (trainFSP)
+					gradScaler->step(*fspOptimizer);
 			} else {
 				if (trainPolicy)
 					policyOptimizer->step();
 				if (trainCritic)
 					valueOptimizer->step();
+				if (trainFSP)
+					fspOptimizer->step();
 			}
 
 			if (autocast)
@@ -300,6 +356,7 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 	meanDivergence /= numMinibatchIterations;
 	meanValLoss /= numMinibatchIterations;
 	meanRatio /= numMinibatchIterations;
+	meanFSP /= numMinibatchIterations;
 
 	float meanClip = 0;
 	if (!clipFractions.empty()) {
@@ -325,6 +382,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 	report["Mean KL Divergence"] = meanDivergence;
 	report["Mean Ratio"] = meanRatio;
 	report["Value Function Loss"] = meanValLoss;
+	if (trainFSP)
+		report["FSP Loss"] = meanFSP;
 	report["SB3 Clip Fraction"] = meanClip;
 	report["Policy Update Magnitude"] = policyUpdateMagnitude;
 	report["Value Function Update Magnitude"] = criticUpdateMagnitude;
@@ -339,6 +398,8 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 
 	policyOptimizer->zero_grad();
 	valueOptimizer->zero_grad();
+	if (fspOptimizer)
+		fspOptimizer->zero_grad();
 }
 
 // Get sizes of all parameters in a module
@@ -354,11 +415,13 @@ std::vector<uint64_t> GetSeqSizes(torch::nn::Module& module) {
 constexpr const char* MODEL_FILE_NAMES[] = {
 		"PPO_POLICY.lt",
 		"PPO_CRITIC.lt",
+		"PPO_FSP.lt",
 };
 
 constexpr const char* OPTIM_FILE_NAMES[] = {
 	"PPO_POLICY_OPTIM.lt",
 	"PPO_CRITIC_OPTIM.lt",
+	"PPO_FSP_OPTIM.lt",
 };
 
 void TorchLoadSaveSeq(std::shared_ptr<torch::nn::Module> module, std::filesystem::path path, c10::Device device, bool load) {
@@ -418,10 +481,16 @@ void TorchLoadSaveAll(RLGPC::PPOLearner* learner, std::filesystem::path folderPa
 	if (!load || std::filesystem::exists(folderPath / MODEL_FILE_NAMES[1]))
 		TorchLoadSaveSeq(learner->valueNet.ptr(), folderPath / MODEL_FILE_NAMES[1], learner->device, load);
 
-	// Load or save optimizers
+	// FSP module (shared earl.* trunk + head.*). Saved/loaded only when the FSP head is active.
+	bool hasFSP = learner->fspOptimizer != NULL;
+	if (hasFSP)
+		TorchLoadSaveSeq(learner->fsp.ptr(), folderPath / MODEL_FILE_NAMES[2], learner->device, load);
+
+	// Load or save optimizers. Index 2 (FSP head) only when the FSP head is active.
+	int nOptims = hasFSP ? 3 : 2;
 	if (load) {
 		try {
-			for (int i = 0; i < 2; i++) {
+			for (int i = 0; i < nOptims; i++) {
 				auto path = folderPath / OPTIM_FILE_NAMES[i];
 
 				if (!std::filesystem::exists(path)) {
@@ -437,13 +506,13 @@ void TorchLoadSaveAll(RLGPC::PPOLearner* learner, std::filesystem::path folderPa
 					}
 				}
 
-				DataStreamIn in = DataStreamIn(path, false);
-
-				auto& optim = i ? learner->valueOptimizer : learner->policyOptimizer;
+				torch::optim::Adam* optim =
+					i == 0 ? learner->policyOptimizer :
+					i == 1 ? learner->valueOptimizer : learner->fspOptimizer;
 
 				torch::serialize::InputArchive policyOptArchive;
 				policyOptArchive.load_from(path.string(), learner->device);
-				(i ? learner->valueOptimizer : learner->policyOptimizer)->load(policyOptArchive);
+				optim->load(policyOptArchive);
 			}
 
 		} catch (std::exception& e) {
@@ -453,9 +522,13 @@ void TorchLoadSaveAll(RLGPC::PPOLearner* learner, std::filesystem::path folderPa
 			);
 		}
 	} else {
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < nOptims; i++) {
+			torch::optim::Adam* optim =
+				i == 0 ? learner->policyOptimizer :
+				i == 1 ? learner->valueOptimizer : learner->fspOptimizer;
+
 			torch::serialize::OutputArchive policyOptArchive;
-			(i ? learner->valueOptimizer : learner->policyOptimizer)->save(policyOptArchive);
+			optim->save(policyOptArchive);
 			policyOptArchive.save_to((folderPath / OPTIM_FILE_NAMES[i]).string());
 		}
 	}

@@ -696,6 +696,18 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 		returnStats.Increment(returns, numToIncrement);
 	}
 
+	// FSP auxiliary: target = the next obs's self-entity feature block (first entityFeatures columns
+	// of the flat next obs, which is exactly the query block's self-entity slice). mask = 1 when the
+	// step is NOT an episode end (so the FSP loss skips steps with no valid next frame). When an
+	// episode ends the target is masked out, so its (arbitrary) value is irrelevant. Mirrors
+	// rollout.py: target = new_o[a][0][0, 0, :ef], mask = 0 at term/trunc else 1.
+	torch::Tensor fspTarget, fspMask;
+	if (config.ppo.lambdaFSP != 0) {
+		int ef = config.ppo.perceiver.entityFeatures;
+		fspTarget = trajData.nextStates.slice(1, 0, ef);
+		fspMask = (1 - trajData.dones) * (1 - trajData.truncateds);
+	}
+
 	auto expTensors = ExperienceTensors{
 			trajData.states,
 			trajData.actions,
@@ -710,7 +722,9 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 			trajData.dones,
 			trajData.truncateds,
 			valueTargets,
-			advantages
+			advantages,
+			fspTarget,
+			fspMask
 	};
 	expBuffer->SubmitExperience(
 		expTensors

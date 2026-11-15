@@ -58,3 +58,6 @@ ___*
 
 # Don't include libtorch if in local dir
 libtorch
+
+# Private design docs (kept on disk, never committed/pushed)
+docs_private/
