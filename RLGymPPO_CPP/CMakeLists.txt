@@ -16,8 +16,11 @@ endif()
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
-# Add all headers and code files
+# Add all headers and code files. The pybind11 module bindings are EXCLUDED here — they define a
+# PYBIND11_MODULE entry point and are compiled into their own extension-module target below, not
+# into this library.
 file(GLOB_RECURSE FILES_SRC "src/*.cpp" "src/*.h" "src/*.hpp" "libsrc/*.cpp" "libsrc/.h" "libsrc/.hpp")
+list(FILTER FILES_SRC EXCLUDE REGEX ".*Bindings/.*")
 
 add_library(RLGymPPO_CPP SHARED ${FILES_SRC})
 target_compile_definitions(RLGymPPO_CPP PRIVATE -DWITHIN_RLGPC)
@@ -76,6 +79,13 @@ add_definitions(-DPY_EXEC_PATH="${Python_EXECUTABLE}") # Give C++ access to the 
 # Include pybind11
 add_subdirectory(pybind11)
 target_link_libraries(RLGymPPO_CPP PUBLIC pybind11::embed)
+
+# Python extension module exposing the single-policy learner to Python. Links the library; the
+# Python driver imports this module and composes N learners into a league in Python.
+pybind11_add_module(rlgym_learner "src/private/RLGymPPO_CPP/Bindings/LearnerBindings.cpp")
+target_include_directories(rlgym_learner PRIVATE "src/public" "src/private")
+target_link_libraries(rlgym_learner PRIVATE RLGymPPO_CPP)
+set_target_properties(rlgym_learner PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
 # MSVC fails to find python DLLs even through they are in my path. Good job MSVC. Well done.
 # This copies the the python DLLs to the output directory

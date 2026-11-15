@@ -15,11 +15,21 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #endif
 
+// The learner embeds CPython for the metric/render receivers. When the library is linked into a
+// standalone executable we OWN the interpreter and must initialize/finalize it. When it is instead
+// imported as a Python extension module (the league driver imports it), the interpreter is already
+// running and owned by Python — we must NOT initialize or finalize it. We only finalize if WE were
+// the ones who initialized it.
+static bool s_interpreterOwnedByUs = false;
+
 RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 	envCreateFn(envCreateFn),
 	config(_config)
 {
-	pybind11::initialize_interpreter();
+	if (!Py_IsInitialized()) {
+		pybind11::initialize_interpreter();
+		s_interpreterOwnedByUs = true;
+	}
 
 #ifndef NDEBUG
 	RG_LOG("===========================");
@@ -448,6 +458,177 @@ void DisplayReport(const RLGPC::Report& report) {
 	}
 }
 
+void RLGPC::Learner::StartAgents() {
+	RG_LOG("Learner::StartAgents(): Starting agents...");
+	agentMgr->SetStepCallback(stepCallback);
+	agentMgr->StartAgents();
+	epochTimer.Reset();
+	tsSinceSave = 0;
+}
+
+void RLGPC::Learner::StopAgents() {
+	RG_LOG("Learner::StopAgents(): Stopping agents...");
+	agentMgr->StopAgents();
+}
+
+// One collect+learn iteration. This is the body that used to live inside Learn()'s while loop,
+// lifted out so an external driver can interleave multiple single-policy learners (Jacobi league:
+// freeze all -> collect -> update each). Behavior is identical to the inlined loop body.
+RLGPC::Report RLGPC::Learner::RunIteration() {
+	Report report = {};
+
+	agentMgr->SetStepCallback(stepCallback);
+
+	// Collect the desired timesteps from our agents
+	GameTrajectory timesteps = agentMgr->CollectTimesteps(config.timestepsPerIteration);
+	double relCollectionTime = epochTimer.Elapsed();
+	uint64_t timestepsCollected = timesteps.size; // Use actual size instead of target size
+
+	totalTimesteps += timestepsCollected;
+
+	if (config.ppo.policyLR == 0 && config.ppo.criticLR == 0) {
+		RG_LOG("\tBoth LRs are set to zero. Skipping consumption!");
+#ifdef RG_CUDA_SUPPORT
+		if (ppo->device.is_cuda())
+			c10::cuda::CUDACachingAllocator::emptyCache();
+#endif
+		epochTimer.Reset();
+		agentMgr->ResetMetrics();
+		return report;
+	}
+
+	if (!config.collectionDuringLearn)
+		agentMgr->disableCollection = true;
+
+	// Add it to our experience buffer, also computing GAE in the process
+	try {
+		AddNewExperience(timesteps, report);
+	} catch (std::exception& e) {
+		RG_ERR_CLOSE("Exception during Learner::AddNewExperience(): " << e.what());
+	}
+
+	Timer ppoLearnTimer = {};
+
+	// Stop agents from inferencing during learn if we are not on CPU
+	// This is because learning is very GPU intensive, and letting iterations collect during that time slows it down
+	// On CPU, learning is its own thread, it's better to keep collecting
+	// Also, if config.collectionDuringLearn is false, we ignore this
+	bool blockAgentInferDuringLearn = config.collectionDuringLearn && !ppo->device.is_cpu();
+	{ // Run the actual PPO learning on the experience we have collected
+
+		if (config.deterministic) {
+			RG_ERR_CLOSE(
+				"Learner::RunIteration(): Cannot run PPO learn iteration when on deterministic mode!"
+				"\nDeterministic mode is meant for performing, not training. Only collection should occur."
+			);
+		}
+
+		RG_LOG("Learning...");
+		if (blockAgentInferDuringLearn)
+			agentMgr->disableCollection = true;
+
+		try {
+			ppo->Learn(expBuffer, report);
+		} catch (std::exception& e) {
+			RG_ERR_CLOSE("Exception during PPOLearner::Learn(): " << e.what());
+		}
+
+		if (blockAgentInferDuringLearn)
+			agentMgr->disableCollection = false;
+
+		totalEpochs += config.ppo.epochs;
+	}
+
+	// Free CUDA cache
+#ifdef RG_CUDA_SUPPORT
+	if (ppo->device.is_cuda())
+		c10::cuda::CUDACachingAllocator::emptyCache();
+#endif
+
+	double ppoLearnTime = ppoLearnTimer.Elapsed();
+	double relEpochTime = epochTimer.Elapsed();
+	epochTimer.Reset(); // Reset now otherwise we can have issues with the timer and thread input-locking
+
+	double consumptionTime = relEpochTime - relCollectionTime;
+
+	if (skillTracker) {
+		RG_LOG("Running skill eval game(s)...");
+
+		if (config.skillTrackerConfig.stepCallback == NULL)
+			skillTracker->config.stepCallback = stepCallback;
+
+		skillTracker->RunGames(ppo->policy, timestepsCollected);
+		for (auto& pair : skillTracker->curRating.data) {
+			std::string metricName = RS_STR("Skill Rating" << (pair.first.empty() ? "" : " ") << pair.first);
+			report[metricName] = pair.second;
+		}
+	}
+
+	// Get all metrics from agent manager
+	agentMgr->GetMetrics(report);
+
+	if (!config.collectionDuringLearn) {
+		agentMgr->disableCollection = false;
+	}
+
+	// If we collect during consuption, don't just measure the time we waited for to collect for steps
+	// Because of collection during learn, this time could be near-zero, resulting in SPS showing some crazy number
+	double trueCollectionTime = config.collectionDuringLearn ? agentMgr->lastIterationTime : relCollectionTime;
+	if (blockAgentInferDuringLearn)
+		trueCollectionTime -= ppoLearnTime; // We couldn't have been collecting during this time
+	trueCollectionTime = RS_MAX(trueCollectionTime, relCollectionTime);
+
+	// Fix same issue with epoch time
+	double trueEpochTime = RS_MAX(relEpochTime, trueCollectionTime);
+
+	{ // Add timers to report
+		report["Total Iteration Time"] = relEpochTime;
+
+		report["Collection Time"] = relCollectionTime;
+		report["Consumption Time"] = consumptionTime;
+		report["Collect-Consume Overlap Time"] = (trueCollectionTime - relCollectionTime);
+	}
+
+	{ // Add timestep data to report
+		report["Collected Steps/Second"] = (int64_t)(timestepsCollected / trueCollectionTime);
+		report["Overall Steps/Second"] = (int64_t)(timestepsCollected / trueEpochTime);
+		report["Timesteps Collected"] = timestepsCollected;
+		report["Cumulative Timesteps"] = totalTimesteps;
+	}
+
+	// Call iteration callback
+	if (iterationCallback) {
+		RG_LOG("Calling iteration callback...");
+		iterationCallback(this, report);
+	}
+
+	{ // Print results
+		constexpr const char* DIVIDER = "======================";
+		RG_LOG("\n");
+		RG_LOG(DIVIDER << DIVIDER);
+		RG_LOG("ITERATION COMPLETED:\n");
+		DisplayReport(report);
+		RG_LOG(DIVIDER << DIVIDER);
+		RG_LOG("\n");
+	}
+
+	// Update metric sender
+	if (config.sendMetrics)
+		metricSender->Send(report);
+
+	// Save if needed
+	tsSinceSave += timestepsCollected;
+	if (tsSinceSave > config.timestepsPerSave && !config.checkpointSaveFolder.empty()) {
+		Save();
+		tsSinceSave = 0;
+	}
+
+	// Reset everything
+	agentMgr->ResetMetrics();
+
+	return report;
+}
+
 void RLGPC::Learner::Learn() {
 	RG_LOG("Learner::Learn():");
 
@@ -455,169 +636,14 @@ void RLGPC::Learner::Learn() {
 	RG_LOG("NOTE: Paranoid mode active. Additional checks will be run that may impact performance.");
 #endif
 
-	RG_LOG("\tStarting agents...");
-	agentMgr->SetStepCallback(stepCallback);
-	agentMgr->StartAgents();
-
-	auto device = ppo->device;
+	StartAgents();
 
 	RG_LOG("\tBeginning learning loop:");
-	int64_t tsSinceSave = 0;
-	Timer epochTimer = {};
-	while (totalTimesteps < config.timestepLimit || config.timestepLimit == 0) {
-		Report report = {};
+	while (totalTimesteps < config.timestepLimit || config.timestepLimit == 0)
+		RunIteration();
 
-		agentMgr->SetStepCallback(stepCallback);
-
-		// Collect the desired timesteps from our agents
-		GameTrajectory timesteps = agentMgr->CollectTimesteps(config.timestepsPerIteration);
-		double relCollectionTime = epochTimer.Elapsed();
-		uint64_t timestepsCollected = timesteps.size; // Use actual size instead of target size
-
-		totalTimesteps += timestepsCollected;
-
-		if (config.ppo.policyLR == 0 && config.ppo.criticLR == 0) {
-			RG_LOG("\tBoth LRs are set to zero. Skipping consumption!");
-#ifdef RG_CUDA_SUPPORT
-			if (ppo->device.is_cuda())
-				c10::cuda::CUDACachingAllocator::emptyCache();
-#endif
-			continue;
-		}
-
-		if (!config.collectionDuringLearn)
-			agentMgr->disableCollection = true;
-
-		// Add it to our experience buffer, also computing GAE in the process
-		try {
-			AddNewExperience(timesteps, report);
-		} catch (std::exception& e) {
-			RG_ERR_CLOSE("Exception during Learner::AddNewExperience(): " << e.what());
-		}
-
-		Timer ppoLearnTimer = {};
-
-		// Stop agents from inferencing during learn if we are not on CPU
-		// This is because learning is very GPU intensive, and letting iterations collect during that time slows it down
-		// On CPU, learning is its own thread, it's better to keep collecting
-		// Also, if config.collectionDuringLearn is false, we ignore this
-		bool blockAgentInferDuringLearn = config.collectionDuringLearn && !device.is_cpu();
-		{ // Run the actual PPO learning on the experience we have collected
-			
-			if (config.deterministic) {
-				RG_ERR_CLOSE(
-					"Learner::Learn(): Cannot run PPO learn iteration when on deterministic mode!"
-					"\nDeterministic mode is meant for performing, not training. Only collection should occur."
-				);
-			}
-
-			RG_LOG("Learning...");
-			if (blockAgentInferDuringLearn)
-				agentMgr->disableCollection = true;
-
-			try {
-				ppo->Learn(expBuffer, report);
-			} catch (std::exception& e) {
-				RG_ERR_CLOSE("Exception during PPOLearner::Learn(): " << e.what());
-			}
-
-			if (blockAgentInferDuringLearn)
-				agentMgr->disableCollection = false;
-
-			totalEpochs += config.ppo.epochs;
-		}
-
-		// Free CUDA cache
-#ifdef RG_CUDA_SUPPORT
-		if (ppo->device.is_cuda())
-			c10::cuda::CUDACachingAllocator::emptyCache();
-#endif
-
-		double ppoLearnTime = ppoLearnTimer.Elapsed();
-		double relEpochTime = epochTimer.Elapsed();
-		epochTimer.Reset(); // Reset now otherwise we can have issues with the timer and thread input-locking
-
-		double consumptionTime = relEpochTime - relCollectionTime;
-
-		if (skillTracker) {
-			RG_LOG("Running skill eval game(s)...");
-
-			if (config.skillTrackerConfig.stepCallback == NULL)
-				skillTracker->config.stepCallback = stepCallback;
-
-			skillTracker->RunGames(ppo->policy, timestepsCollected);
-			for (auto& pair : skillTracker->curRating.data) {
-				std::string metricName = RS_STR("Skill Rating" << (pair.first.empty() ? "" : " ") << pair.first);
-				report[metricName] = pair.second;
-			}
-		}
-
-		// Get all metrics from agent manager
-		agentMgr->GetMetrics(report);
-
-		if (!config.collectionDuringLearn) {
-			agentMgr->disableCollection = false;
-		}
-
-		// If we collect during consuption, don't just measure the time we waited for to collect for steps
-		// Because of collection during learn, this time could be near-zero, resulting in SPS showing some crazy number
-		double trueCollectionTime = config.collectionDuringLearn ? agentMgr->lastIterationTime : relCollectionTime;
-		if (blockAgentInferDuringLearn)
-			trueCollectionTime -= ppoLearnTime; // We couldn't have been collecting during this time
-		trueCollectionTime = RS_MAX(trueCollectionTime, relCollectionTime);
-
-		// Fix same issue with epoch time
-		double trueEpochTime = RS_MAX(relEpochTime, trueCollectionTime);
-
-		{ // Add timers to report
-			report["Total Iteration Time"] = relEpochTime;
-
-			report["Collection Time"] = relCollectionTime;
-			report["Consumption Time"] = consumptionTime;
-			report["Collect-Consume Overlap Time"] = (trueCollectionTime - relCollectionTime);
-		}
-
-		{ // Add timestep data to report
-			report["Collected Steps/Second"] = (int64_t)(timestepsCollected / trueCollectionTime);
-			report["Overall Steps/Second"] = (int64_t)(timestepsCollected / trueEpochTime);
-			report["Timesteps Collected"] = timestepsCollected;
-			report["Cumulative Timesteps"] = totalTimesteps;
-		}
-
-		// Call iteration callback
-		if (iterationCallback) {
-			RG_LOG("Calling iteration callback...");
-			iterationCallback(this, report);
-		}
-
-		{ // Print results
-			constexpr const char* DIVIDER = "======================";
-			RG_LOG("\n");
-			RG_LOG(DIVIDER << DIVIDER);
-			RG_LOG("ITERATION COMPLETED:\n");
-			DisplayReport(report);
-			RG_LOG(DIVIDER << DIVIDER);
-			RG_LOG("\n");
-		}
-
-		// Update metric sender
-		if (config.sendMetrics)
-			metricSender->Send(report);
-
-		// Save if needed
-		tsSinceSave += timestepsCollected;
-		if (tsSinceSave > config.timestepsPerSave && !config.checkpointSaveFolder.empty()) {
-			Save();
-			tsSinceSave = 0;
-		}
-
-		// Reset everything
-		agentMgr->ResetMetrics();
-	}
-	
 	RG_LOG("Learner: Timestep limit of " << config.timestepLimit << " reached, stopping");
-	RG_LOG("\tStopping agents...");
-	agentMgr->StopAgents();
+	StopAgents();
 }
 
 void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) {
@@ -755,5 +781,8 @@ RLGPC::Learner::~Learner() {
 	delete expBuffer;
 	delete metricSender;
 	delete renderSender;
-	pybind11::finalize_interpreter();
+	if (s_interpreterOwnedByUs) {
+		pybind11::finalize_interpreter();
+		s_interpreterOwnedByUs = false;
+	}
 }

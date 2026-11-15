@@ -4,6 +4,7 @@
 #include "Util/WelfordRunningStat.h"
 #include "Util/MetricSender.h"
 #include "Util/RenderSender.h"
+#include "Util/Timer.h"
 #include "LearnerConfig.h"
 
 namespace RLGPC {
@@ -35,8 +36,22 @@ namespace RLGPC {
 			
 		WelfordRunningStat returnStats = WelfordRunningStat(1);
 
+		// Cross-iteration timer for RunIteration() (carries the collection start time across calls)
+		Timer epochTimer = {};
+		int64_t tsSinceSave = 0;
+
 		Learner(EnvCreateFn envCreateFunc, LearnerConfig config);
 		void Learn();
+
+		// Single collect+learn iteration. Learn() is just a loop over this. Exposed so an external
+		// (Python) driver can drive one bot's learner step-by-step and interleave multiple learners.
+		Report RunIteration();
+
+		// Start/stop the background collection agents without running the learn loop (for drivers
+		// that call RunIteration() themselves).
+		void StartAgents();
+		void StopAgents();
+
 		void AddNewExperience(class GameTrajectory& gameTraj, Report& report);
 
 		void UpdateLearningRates(float policyLR, float criticLR);
