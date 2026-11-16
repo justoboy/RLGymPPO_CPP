@@ -56,6 +56,11 @@ target_include_directories(ParityGate PRIVATE "src/public" "src/private")
 target_link_libraries(ParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
 set_target_properties(ParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
+# Isolation test: does the live Gym env Reset() work in this environment (no torch/pybind/Learner)?
+add_executable(isolation_env "${PROJECT_SOURCE_DIR}/../tools/isolation_env.cpp")
+target_link_libraries(isolation_env PUBLIC RLGymSim_CPP)
+set_target_properties(isolation_env PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+
 # Standalone microbenchmark for the obs->tensor conversion hot path (Tier A candidate).
 add_executable(obsbench "${PROJECT_SOURCE_DIR}/../tools/obsbench.cpp")
 target_link_libraries(obsbench PUBLIC "${TORCH_LIBRARIES}")

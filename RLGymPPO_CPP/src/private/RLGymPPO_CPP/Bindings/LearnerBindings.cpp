@@ -11,122 +11,23 @@
 #include <RLGymPPO_CPP/Learner.h>
 #include <RLGymPPO_CPP/LearnerConfig.h>
 #include <RLGymPPO_CPP/PPO/PPOLearnerConfig.h>
-
-#include <RLGymSim_CPP/Utils/RewardFunctions/CommonRewards.h>
-#include <RLGymSim_CPP/Utils/RewardFunctions/CombinedReward.h>
-#include <RLGymSim_CPP/Utils/TerminalConditions/NoTouchCondition.h>
-#include <RLGymSim_CPP/Utils/TerminalConditions/GoalScoreCondition.h>
-#include <RLGymSim_CPP/Utils/OBSBuilders/TemporalObsBuilder.h>
-#include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
-#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
-#include <RLGymSim_CPP/Utils/ActionParsers/ContinuousActionParser.h>
+#include <RLGymPPO_CPP/EnvFactory.h>
 
 namespace py = pybind11;
 using namespace RLGPC;
 using namespace RLGSC;
 
-// Everything the C++ env factory needs to build a Match+Gym, parameterized so Python configures it
-// without touching the heavy sim types. Mirrors examplemain.cpp's EnvCreateFunc, extended with the
-// P4 mode/team/spawn-curriculum knobs.
-struct EnvConfig {
-	int tickSkip = 8;
-	float noTouchTimeoutSecs = 10.f;
-
-	// Reward weights (CombinedReward). Mirrors the example's { FaceBall, VelPlayerToBall,
-	// VelBallToGoal, EventReward{teamGoal,concede} }.
-	float faceBallWeight = 0.1f;
-	float velPlayerToBallWeight = 0.5f;
-	float velBallToGoalWeight = 1.0f;
-	float eventTeamGoal = 1.f;
-	float eventConcede = -1.f;
-	float eventWeight = 50.f;
-
-	int teamSize = 1;
-	bool spawnOpponents = true;
-
-	// Fixed arena mode for this env (the league builds one env per mode). Maps to GameMode.
-	GameMode gameMode = GameMode::SOCCAR;
-
-	// Spawn-curriculum overlay (SpawnCurriculumMutator). Disabled by default -> native kickoff only.
-	bool spawnCurriculumEnabled = false;
-	float spawnCurriculumRatio = 1.0f;
-	float spawnCurriculumProb = 0.5f;
-
-	// Per-episode RNG seed for the kickoff + custom-spawn coin flip.
-	uint32_t mutatorSeed = 0;
-
-	// Perceiver obs layout must match TemporalObsBuilder's output for this config.
-	int queryFeatures = 208;
-	int kvFeatures = 69;
-	int nTokens = 151;
-	int nControls = 9;
-	int entityFeatures = 39;
-};
-
-// Builds the C++ EnvCreateFn from an EnvConfig. The returned std::function captures config by value.
-static EnvCreateFn MakeEnvCreateFn(const EnvConfig& ec) {
-	return [ec]() -> EnvCreateResult {
-		auto rewards = new CombinedReward(
-			{
-				{ new FaceBallReward(), ec.faceBallWeight },
-				{ new VelocityPlayerToBallReward(), ec.velPlayerToBallWeight },
-				{ new VelocityBallToGoalReward(), ec.velBallToGoalWeight },
-				{ new EventReward({ .teamGoal = ec.eventTeamGoal, .concede = ec.eventConcede }), ec.eventWeight },
-			}
-		);
-
-		std::vector<TerminalCondition*> terminalConditions = {
-			new NoTouchCondition(ec.noTouchTimeoutSecs * 120 / ec.tickSkip),
-			new GoalScoreCondition()
-		};
-
-		auto obs = new TemporalObsBuilder();
-		obs->activeMode = ec.gameMode;
-		obs->nBlue = ec.teamSize;
-		obs->nOrange = ec.spawnOpponents ? ec.teamSize : 0;
-		auto actionParser = new ContinuousActionParser(ec.tickSkip);
-
-		// Chain: kickoff (mode/team) -> optional custom-spawn overlay. Each setter owns its config by
-		// value, so nothing dangles after this lambda returns.
-		auto teamSetter = new TeamConfigMutator(ec.mutatorSeed);
-		auto modeSetter = new ModeSamplerMutator(obs, ec.mutatorSeed + 1u);
-		auto spawnSetter = new SpawnCurriculumMutator(
-			ec.spawnCurriculumEnabled, ec.spawnCurriculumRatio, ec.spawnCurriculumProb, ec.mutatorSeed + 2u);
-
-		auto sequence = new MutatorSequence(std::vector<StateSetter*>{ teamSetter, modeSetter, spawnSetter });
-
-		Match* match = new Match(
-			rewards,
-			terminalConditions,
-			obs,
-			actionParser,
-			sequence,
-			ec.teamSize,
-			ec.spawnOpponents
-		);
-
-		Gym* gym = new Gym(match, ec.tickSkip, CAR_CONFIG_OCTANE, ec.gameMode, MutatorConfig(ec.gameMode));
-		// Keep holders alive for the lifetime of the env by stashing them on the match's setters;
-		// they are captured by the lambda's shared_ptr copies above (kept alive via the setters).
-		return { match, gym };
-	};
-}
-
-// Factory that builds a Learner from an EnvConfig + LearnerConfig. This is the single generic verb
-// the Python driver uses to spin up one policy's learner.
-static Learner* CreateLearner(const EnvConfig& ec, LearnerConfig cfg) {
-	// Keep the perceiver layout in the learner config aligned with the env config.
-	cfg.ppo.perceiver.queryFeatures = ec.queryFeatures;
-	cfg.ppo.perceiver.kvFeatures = ec.kvFeatures;
-	cfg.ppo.perceiver.nTokens = ec.nTokens;
-	cfg.ppo.perceiver.nControls = ec.nControls;
-	cfg.ppo.perceiver.entityFeatures = ec.entityFeatures;
-	return new Learner(MakeEnvCreateFn(ec), cfg);
-}
+// NOTE: EnvConfig + CreateLearner are DECLARED in <RLGymPPO_CPP/EnvFactory.h> and DEFINED inside the
+// DLL (EnvFactory.cpp). The factory lambda that constructs the Gym/Match MUST be compiled into the
+// DLL, because RLGymSim_CPP is statically linked into BOTH this module and the DLL; if the lambda
+// lived here it would call `new Gym` against this module's *uninitialized* copy of RocketSim's
+// static stage state (RocketSim::Init only initialized the DLL's copy) and crash. Binding the
+// DLL-owned CreateLearner keeps all RLGymSim_CPP construction on the initialized (DLL) side.
 
 PYBIND11_MODULE(rlgym_learner, m) {
-	m.doc() = "Single-policy C++ PPO learner (EARL Perceiver) exposed to Python. "
-		"League/multi-policy behavior is composed in Python by driving several of these.";
+	m.doc() = "C++ PPO learner (EARL Perceiver) exposed to Python. A single handle may own one or "
+		"more members (policies); run_iteration() returns one metric dict per member. Multi-member "
+		"behavior is composed in Python by configuring memberPerceiver/slotOwners.";
 
 	py::enum_<LearnerDeviceType>(m, "LearnerDeviceType")
 		.value("AUTO", LearnerDeviceType::AUTO)
@@ -200,18 +101,31 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("gaeLambda", &LearnerConfig::gaeLambda)
 		.def_readwrite("gaeGamma", &LearnerConfig::gaeGamma)
 		.def_readwrite("rewardClipRange", &LearnerConfig::rewardClipRange)
-		.def_readwrite("checkpointLoadFolder", &LearnerConfig::checkpointLoadFolder)
-		.def_readwrite("checkpointSaveFolder", &LearnerConfig::checkpointSaveFolder)
+		// Checkpoint folders are std::filesystem::path internally; expose as str for Python ergonomics.
+		.def_property("checkpointLoadFolder",
+			[](const LearnerConfig& c) { return c.checkpointLoadFolder.string(); },
+			[](LearnerConfig& c, const std::string& s) { c.checkpointLoadFolder = s.empty() ? std::filesystem::path{} : std::filesystem::path(s); })
+		.def_property("checkpointSaveFolder",
+			[](const LearnerConfig& c) { return c.checkpointSaveFolder.string(); },
+			[](LearnerConfig& c, const std::string& s) { c.checkpointSaveFolder = s.empty() ? std::filesystem::path{} : std::filesystem::path(s); })
 		.def_readwrite("saveFolderAddUnixTimestamp", &LearnerConfig::saveFolderAddUnixTimestamp)
 		.def_readwrite("timestepsPerSave", &LearnerConfig::timestepsPerSave)
+		.def_readwrite("deviceType", &LearnerConfig::deviceType)
 		.def_readwrite("randomSeed", &LearnerConfig::randomSeed)
 		.def_readwrite("checkpointsToKeep", &LearnerConfig::checkpointsToKeep)
-		.def_readwrite("deviceType", &LearnerConfig::deviceType)
+		// Collision-mesh folder (absolute path recommended when embedded in a host with unknown CWD).
+		.def_property("collisionMeshesFolder",
+			[](const LearnerConfig& c) { return c.collisionMeshesFolder.string(); },
+			[](LearnerConfig& c, const std::string& s) { c.collisionMeshesFolder = s; })
 		.def_readwrite("sendMetrics", &LearnerConfig::sendMetrics)
 		.def_readwrite("metricsProjectName", &LearnerConfig::metricsProjectName)
 		.def_readwrite("metricsGroupName", &LearnerConfig::metricsGroupName)
 		.def_readwrite("metricsRunName", &LearnerConfig::metricsRunName)
-		.def_readwrite("skillTrackerConfig", &LearnerConfig::skillTrackerConfig);
+		.def_readwrite("skillTrackerConfig", &LearnerConfig::skillTrackerConfig)
+		// Multi-member league config. memberPerceiver: one PerceiverConfig per member (owner id);
+		// empty => single member. slotOwners: per-slot owner id (same for every game); empty => all 0.
+		.def_readwrite("memberPerceiver", &LearnerConfig::memberPerceiver)
+		.def_readwrite("slotOwners", &LearnerConfig::slotOwners);
 
 	py::class_<EnvConfig>(m, "EnvConfig")
 		.def(py::init<>())

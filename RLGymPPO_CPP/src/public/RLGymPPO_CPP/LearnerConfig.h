@@ -77,6 +77,11 @@ namespace RLGPC {
 		int checkpointsToKeep = 5; // Checkpoint storage limit before old checkpoints are deleted, set to -1 to disable
 		LearnerDeviceType deviceType = LearnerDeviceType::AUTO; // Auto will use your CUDA GPU if available
 
+		// Folder containing the RocketSim collision meshes (soccar/hoops/dropshot subfolders of .cmf
+		// files). Relative paths resolve against the process CWD, so prefer an ABSOLUTE path when the
+		// learner is embedded in a host (e.g. a Python driver) whose CWD you don't control.
+		std::filesystem::path collisionMeshesFolder = "collision_meshes";
+
 		// Send metrics to the python metrics receiver
 		// The receiver can then log them to wandb or whatever
 		bool sendMetrics = true;
