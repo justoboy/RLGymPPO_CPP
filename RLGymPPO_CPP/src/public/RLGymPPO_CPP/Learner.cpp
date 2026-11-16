@@ -801,6 +801,12 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, int member, Repo
 	);
 }
 
+void RLGPC::Learner::SeedMember(int member, std::filesystem::path folder) {
+	if (member < 0 || member >= (int)ppos.size())
+		RG_ERR_CLOSE("Learner::SeedMember(): member index " << member << " out of range");
+	ppos[member]->SeedFrom(folder);
+}
+
 void RLGPC::Learner::UpdateLearningRates(float policyLR, float criticLR) {
 	for (auto* p : ppos)
 		p->UpdateLearningRates(policyLR, criticLR);

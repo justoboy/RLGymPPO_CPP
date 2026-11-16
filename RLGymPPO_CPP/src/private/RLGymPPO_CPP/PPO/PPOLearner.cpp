@@ -1,6 +1,7 @@
 #include "PPOLearner.h"
 
 #include "../Util/TorchFuncs.h"
+#include "../Util/StateDictIO.h"
 
 #include <torch/nn/utils/convert_parameters.h>
 #include <torch/nn/utils/clip_grad.h>
@@ -557,6 +558,39 @@ void RLGPC::PPOLearner::LoadFrom(std::filesystem::path folderPath)  {
 	TorchLoadSaveAll(this, folderPath, true);
 
 	UpdateLearningRates(config.policyLR, config.criticLR);
+}
+
+// WEIG seed path (cross-version). Reads the binary state-dict blobs written by
+// tools/convert_bc_checkpoint.py and copies each tensor into the matching module by qualified
+// name. The actor blob (PPO_POLICY.lt) is required; critic/FSP blobs are optional (loaded only when
+// present + the FSP head is active). Optimizers are NOT seeded (fresh Adam state) — correct for a
+// BC->RL warm start. Mirrors parity_main.cpp's load path, which is the parity-gated reference.
+void RLGPC::PPOLearner::SeedFrom(std::filesystem::path folderPath) {
+	RG_LOG("PPOLearner(): Seeding (WEIG) from: " << folderPath);
+	if (!std::filesystem::is_directory(folderPath))
+		RG_ERR_CLOSE("PPOLearner::SeedFrom(): Path " << folderPath << " is not a valid directory");
+
+	std::filesystem::path actorPath = folderPath / MODEL_FILE_NAMES[0];
+	if (!std::filesystem::exists(actorPath))
+		RG_ERR_CLOSE("PPOLearner::SeedFrom(): missing actor blob " << actorPath);
+	ApplyStateDict(*policy->net.ptr(), LoadStateDict(actorPath.string()));
+	RG_LOG(" > Seeded actor from " << actorPath.filename().string());
+
+	std::filesystem::path criticPath = folderPath / MODEL_FILE_NAMES[1];
+	if (std::filesystem::exists(criticPath)) {
+		ApplyStateDict(*valueNet.ptr(), LoadStateDict(criticPath.string()));
+		RG_LOG(" > Seeded critic from " << criticPath.filename().string());
+	}
+
+	if (fspOptimizer != NULL) {
+		std::filesystem::path fspPath = folderPath / MODEL_FILE_NAMES[2];
+		if (std::filesystem::exists(fspPath)) {
+			// FSP blob carries earl.* (same shared trunk values as the actor) + head.*; applying it
+			// re-writes the shared earl with identical values and fills the head.
+			ApplyStateDict(*fsp.ptr(), LoadStateDict(fspPath.string()));
+			RG_LOG(" > Seeded FSP from " << fspPath.filename().string());
+		}
+	}
 }
 
 void RLGPC::PPOLearner::UpdateLearningRates(float policyLR, float criticLR) {

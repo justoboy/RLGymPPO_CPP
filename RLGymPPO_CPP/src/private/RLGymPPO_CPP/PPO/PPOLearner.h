@@ -52,6 +52,14 @@ namespace RLGPC {
 		void LoadFrom(std::filesystem::path folderPath);
 		GaussianPolicy* LoadAdditionalPolicy(std::filesystem::path folderPath);
 
+		// WEIG seed path: read the version-independent binary state-dict blobs written by
+		// tools/convert_bc_checkpoint.py (PPO_POLICY.lt / PPO_CRITIC.lt / PPO_FSP.lt) and copy each
+		// tensor into the matching module by qualified name. Unlike LoadFrom (torch pickle archive,
+		// only readable by the SAME libtorch that wrote it), this is cross-version: a BC checkpoint
+		// trained under torch 2.14 loads byte-identically into the libtorch 2.2 learner. Optimizers
+		// are NOT seeded (fresh Adam state), which is correct for a BC->RL warm start.
+		void SeedFrom(std::filesystem::path folderPath);
+
 		void UpdateLearningRates(float policyLR, float criticLR);
 	};
 }

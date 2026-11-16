@@ -70,6 +70,10 @@ namespace RLGPC {
 	void SaveStats(std::filesystem::path path, int member);
 	void LoadStats(std::filesystem::path path, int member);
 
+	// Cross-version BC warm-start: seed member `member`'s actor/critic/FSP from the WEIG blobs in
+	// `folder` (PPO_POLICY.lt etc., produced by tools/convert_bc_checkpoint.py). Optimizers stay fresh.
+	void SeedMember(int member, std::filesystem::path folder);
+
 		IterationCallback iterationCallback = NULL;
 		StepCallback stepCallback = NULL;
 

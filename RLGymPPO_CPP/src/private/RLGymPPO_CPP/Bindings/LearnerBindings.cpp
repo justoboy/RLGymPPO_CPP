@@ -168,6 +168,10 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def("save", &Learner::Save)
 		.def("load", &Learner::Load)
 		.def("update_learning_rates", &Learner::UpdateLearningRates)
+		.def("seed_member", [](Learner& l, int member, const std::string& folder) {
+			l.SeedMember(member, std::filesystem::path(folder));
+		}, py::arg("member"), py::arg("folder"),
+		"Seed a member's weights from a WEIG checkpoint folder (PPO_POLICY.lt etc.). Optimizers stay fresh.")
 		.def("get_all_game_metrics", &Learner::GetAllGameMetrics)
 		.def_property_readonly("obs_size", [](const Learner& l) { return l.obsSize; })
 		.def_property_readonly("action_amount", [](const Learner& l) { return l.actionAmount; })
