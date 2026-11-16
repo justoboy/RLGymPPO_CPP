@@ -35,7 +35,9 @@ void OnStep(GameInst* gameInst, const RLGSC::Gym::StepResult& stepResult, Report
 
 // This is our iteration callback, it's called every time we complete an iteration, after learning
 // Here we can add custom metrics to the metrics report, for example
-void OnIteration(Learner* learner, Report& allMetrics) {
+void OnIteration(Learner* learner, std::vector<Report>& allReports) {
+	// Single-member example: aggregate into member 0's report.
+	Report& allMetrics = allReports[0];
 
 	AvgTracker avgPlayerSpeed = {};
 	AvgTracker avgBallTouchRatio = {};

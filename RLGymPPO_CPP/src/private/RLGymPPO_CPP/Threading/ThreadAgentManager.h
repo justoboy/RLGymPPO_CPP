@@ -7,11 +7,27 @@
 #include <RLGymPPO_CPP/Util/RenderSender.h>
 
 namespace RLGPC {
+	// Multi-policy match primitive. The env always emits the SUPERSET (profile-on) flat obs; each
+	// policy (one per "member"/owner) owns a fixed subset of the per-game slots (slotOwners, identical
+	// for every game). At each step we column-project the superset obs down to each owner's own width
+	// (colIdx[g]) and run that owner's policy on just its slots, then scatter the per-slot actions back.
+	// N=1 (one policy, identity colIdx) collapses to the old single-policy path byte-for-byte.
 	class ThreadAgentManager {
 	public:
-		GaussianPolicy* policy;
+		// One policy per owner (member). policies[g] serves every slot whose owner id equals g.
+		std::vector<GaussianPolicy*> policies;
+
+		// slotOwners[j] = owner id of slot j (length == playerAmount, SAME for every game). Empty in
+		// single-policy mode (every slot belongs to owner 0).
+		std::vector<int> slotOwners;
+		int playerAmount = 0;
+		int nControls = 0; // shared action width across all owners
+
+		// Per-owner column gather (int64 CPU) projecting the superset flat obs to owner g's width.
+		// Undefined when the owner's width equals the superset (identity) -> skip the gather.
+		std::vector<torch::Tensor> colIdx;
+
 		std::vector<ThreadAgent*> agents;
-		ExperienceBuffer* expBuffer;
 		std::mutex expBufferMutex = {};
 		std::mutex inferMutex = {};
 		bool standardizeOBS;
@@ -19,6 +35,13 @@ namespace RLGPC {
 		bool blockConcurrentInfer;
 		uint64_t maxCollect;
 		torch::Device device;
+
+		// Superset layout constants (derived from the widest policy config), used to build colIdx.
+		int supEf = 0, supQ = 0, supKv = 0, supTokens = 0;
+
+		// Single-policy mode: every slot belongs to owner 0 and the projection is identity. Lets the run
+		// loop skip the per-owner gather/scatter and call policies[0]->GetAction(fullObs) directly.
+		bool singlePolicy = false;
 
 		RenderSender* renderSender = NULL;
 		bool renderDuringTraining = false;
@@ -30,14 +53,70 @@ namespace RLGPC {
 		double lastIterationTime = 0;
 		WelfordRunningStat obsStats;
 
+		// Multi-policy constructor. policies is indexed by owner id; slotOwners maps each slot to its
+		// owner. Superset layout is taken from the policy with the largest entityFeatures.
 		ThreadAgentManager(
-			GaussianPolicy* policy, ExperienceBuffer* expBuffer,
+			std::vector<GaussianPolicy*> policies, std::vector<int> slotOwners,
 			bool standardizeOBS, bool deterministic, bool blockConcurrentInfer, uint64_t maxCollect, torch::Device device) :
-			policy(policy), expBuffer(expBuffer),
+			policies(policies), slotOwners(slotOwners),
 			standardizeOBS(standardizeOBS), deterministic(deterministic), blockConcurrentInfer(blockConcurrentInfer),
-			maxCollect(maxCollect), device(device) {}
+			maxCollect(maxCollect), device(device) {
+
+			playerAmount = (int)slotOwners.size();
+			// A single policy owns every slot => identity projection, byte-identical to the historical
+			// single-policy path (no gather/scatter, GetAction called directly on the full obs tensor).
+			singlePolicy = (policies.size() == 1);
+			nControls = (int)policies[0]->config.nControls;
+
+			// Superset = the widest owner layout. All owners share nTokens.
+			supTokens = policies[0]->config.nTokens;
+			supEf = 0;
+			for (auto* p : policies)
+				supEf = RS_MAX(supEf, (int)p->config.entityFeatures);
+			for (auto* p : policies) {
+				if ((int)p->config.entityFeatures == supEf) {
+					supQ = (int)p->config.queryFeatures;
+					supKv = (int)p->config.kvFeatures;
+					break;
+				}
+			}
+
+			for (auto* p : policies)
+				this->colIdx.push_back(BuildColIdx((int)p->config.entityFeatures));
+		}
 
 		RG_NO_COPY(ThreadAgentManager);
+
+		// Column gather from the superset flat obs to an owner with entity features `ef`. Returns an
+		// undefined tensor when ef == supEf (identity: caller must skip the gather).
+		torch::Tensor BuildColIdx(int ef) {
+			if (ef == supEf)
+				return torch::Tensor();
+
+			std::vector<int64_t> idx;
+			for (int c = 0; c < ef; c++) idx.push_back(c);
+			for (int c = supEf; c < supQ; c++) idx.push_back(c);
+			for (int t = 0; t < supTokens; t++) {
+				int64_t base = (int64_t)supQ + (int64_t)t * supKv;
+				for (int c = 0; c < ef; c++) idx.push_back(base + c);
+				for (int c = supEf; c < supKv; c++) idx.push_back(base + c);
+			}
+			int64_t maskBase = (int64_t)supQ + (int64_t)supTokens * supKv;
+			for (int t = 0; t < supTokens; t++) idx.push_back(maskBase + t);
+
+			return torch::from_blob(idx.data(), { (int64_t)idx.size() }, torch::TensorOptions().dtype(torch::kLong)).clone();
+		}
+
+		// Flat row indices (game-major, then slot) owned by owner g for an agent with numGames games. In
+		// single-policy mode every row belongs to owner 0 (identity), so we return all rows.
+		std::vector<int64_t> BuildRowIdx(int g, int numGames) {
+			std::vector<int64_t> rows;
+			for (int i = 0; i < numGames; i++)
+				for (int j = 0; j < playerAmount; j++)
+					if (singlePolicy || slotOwners[j] == g)
+						rows.push_back((int64_t)i * playerAmount + j);
+			return rows;
+		}
 
 		void CreateAgents(EnvCreateFn func, int amount, int gamesPerAgent);
 
@@ -60,7 +139,8 @@ namespace RLGPC {
 		void GetMetrics(Report& report);
 		void ResetMetrics();
 
-		GameTrajectory CollectTimesteps(uint64_t amount);
+		// Collect `amount` timesteps, returning one GameTrajectory per owner (indexed by owner id).
+		std::vector<GameTrajectory> CollectTimesteps(uint64_t amount);
 
 		~ThreadAgentManager() {
 			for (ThreadAgent* agent : agents)

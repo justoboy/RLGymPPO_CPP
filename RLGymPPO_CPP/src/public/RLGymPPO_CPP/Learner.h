@@ -9,16 +9,24 @@
 
 namespace RLGPC {
 
-	typedef std::function<void(class Learner*, Report&)> IterationCallback;
+	typedef std::function<void(class Learner*, std::vector<Report>&)> IterationCallback;
 
 	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/learner.py
+	// Multi-member: one PPOLearner + one ExperienceBuffer + one return-stat per "member" (owner id).
+	// A single-bot run is the N=1 case (one member, every slot owned by member 0); behavior is identical.
 	class RG_IMEXPORT Learner {
 	public:
 		LearnerConfig config;
 
-		class PPOLearner* ppo;
+		// Indexed by member/owner id. Member 0's PPOLearner replaces the historical single `ppo`.
+		std::vector<class PPOLearner*> ppos;
+		std::vector<class ExperienceBuffer*> buffers;
+		std::vector<WelfordRunningStat> returnStats;
+
+		// slotOwners[j] = member id owning slot j (same for every game). Empty in single-member mode.
+		std::vector<int> slotOwners;
+
 		class ThreadAgentManager* agentMgr;
-		class ExperienceBuffer* expBuffer;
 		EnvCreateFn envCreateFn;
 		MetricSender* metricSender;
 		RenderSender* renderSender;
@@ -33,8 +41,6 @@ namespace RLGPC {
 		uint64_t
 			totalTimesteps = 0,
 			totalEpochs = 0;
-			
-		WelfordRunningStat returnStats = WelfordRunningStat(1);
 
 		// Cross-iteration timer for RunIteration() (carries the collection start time across calls)
 		Timer epochTimer = {};
@@ -43,25 +49,26 @@ namespace RLGPC {
 		Learner(EnvCreateFn envCreateFunc, LearnerConfig config);
 		void Learn();
 
-		// Single collect+learn iteration. Learn() is just a loop over this. Exposed so an external
-		// (Python) driver can drive one bot's learner step-by-step and interleave multiple learners.
-		Report RunIteration();
+		// Single collect+learn iteration. Learn() is just a loop over this. Returns one Report per
+		// member so an external (Python) driver can interleave multiple members (Jacobi league: freeze
+		// all -> collect -> update each). Behavior is identical to the inlined single-bot loop body.
+		std::vector<Report> RunIteration();
 
 		// Start/stop the background collection agents without running the learn loop (for drivers
 		// that call RunIteration() themselves).
 		void StartAgents();
 		void StopAgents();
 
-		void AddNewExperience(class GameTrajectory& gameTraj, Report& report);
+		void AddNewExperience(class GameTrajectory& gameTraj, int member, Report& report);
 
 		void UpdateLearningRates(float policyLR, float criticLR);
 
 		std::vector<Report> GetAllGameMetrics();
 
-		void Save();
-		void Load();
-		void SaveStats(std::filesystem::path path);
-		void LoadStats(std::filesystem::path path);
+	void Save();
+	void Load();
+	void SaveStats(std::filesystem::path path, int member);
+	void LoadStats(std::filesystem::path path, int member);
 
 		IterationCallback iterationCallback = NULL;
 		StepCallback stepCallback = NULL;

@@ -10,10 +10,14 @@ void RLGPC::ThreadAgentManager::CreateAgents(EnvCreateFn func, int amount, int g
 		}
 		auto agent = new ThreadAgent(this, numGames, maxCollect / amount, func, i);
 		agents.push_back(agent);
+
+		// playerAmount (slots per game) is fixed across games; learn it from the first game we build.
+		if (playerAmount == 0)
+			playerAmount = (int)agent->gameInsts[0]->match->playerAmount;
 	}
 }
 
-RLGPC::GameTrajectory RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amount) {
+std::vector<RLGPC::GameTrajectory> RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amount) {
 
 	RG_LOG("Collecting timesteps...");
 	// We will just wait in this loop until our agents have collected enough total timesteps
@@ -36,25 +40,31 @@ RLGPC::GameTrajectory RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amoun
 	 
 	RG_LOG("Concatenating timesteps...");
 
-	GameTrajectory result = {};
-	size_t totalTimesteps = 0;
+	// One trajectory per owner (member). In single-policy mode there is exactly one owner (index 0).
+	std::vector<GameTrajectory> results(policies.size());
+	std::vector<size_t> totals(policies.size(), 0);
 
 	try {
-		// Combine all of their trajectories into one long trajectory
-		// We will return this giant trajectory to the learner
-		std::vector<GameTrajectory> trajs;
+		// Combine each owner's per-slot trajectories into that owner's long trajectory.
 		for (auto agent : agents) {
 			agent->trajMutex.lock();
-			for (auto& trajSet : agent->trajectories) {
-				for (auto& traj : trajSet) {
+			for (int i = 0; i < (int)agent->trajectories.size(); i++) {
+				auto& trajSet = agent->trajectories[i];
+				for (int j = 0; j < (int)trajSet.size(); j++) {
+					auto& traj = trajSet[j];
 					if (traj.size > 0) {
 						// If the last timestep is not a done, mark it as truncated
 						// The GAE needs to know when the environment state stops being continuous
 						// This happens either because the environment reset (i.e. goal scored), called "done",
 						//	or the data got cut short, called "truncated"
 						traj.data.truncateds[traj.size - 1] = (traj.data.dones[traj.size - 1].item<float>() == 0);
-						trajs.push_back(traj);
-						totalTimesteps += traj.size;
+
+						int owner = singlePolicy ? 0 : slotOwners[j];
+						if (results[owner].size == 0)
+							results[owner] = traj;
+						else
+							results[owner].Append(traj);
+						totals[owner] += traj.size;
 						traj.Clear();
 					} else {
 						// Kinda lame but does happen
@@ -64,19 +74,20 @@ RLGPC::GameTrajectory RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amoun
 			agent->stepsCollected = 0;
 			agent->trajMutex.unlock();
 		}
-
-		result.MultiAppend(trajs);
 	} catch (std::exception& e) {
 		RG_ERR_CLOSE("Exception concatenating timesteps: " << e.what());
 	}
 
 	// Being extra paranoid in case something goes wrong
-	if (result.size != totalTimesteps)
-		RG_ERR_CLOSE("ThreadAgentManager::CollectTimesteps(): Agent timestep concatenation failed (" << result.size << " != " << totalTimesteps << ")");
+	size_t grandTotal = 0;
+	for (size_t t : totals)
+		grandTotal += t;
+	if (grandTotal != amount)
+		RG_LOG("ThreadAgentManager::CollectTimesteps(): collected " << grandTotal << " timesteps (target " << amount << ")");
 
 	lastIterationTime = iterationTimer.Elapsed();
 	iterationTimer.Reset();
-	return result;
+	return results;
 }
 
 void RLGPC::ThreadAgentManager::GetMetrics(Report& report) {

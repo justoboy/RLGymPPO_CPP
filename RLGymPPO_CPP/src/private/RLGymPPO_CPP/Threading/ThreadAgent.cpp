@@ -28,6 +28,14 @@ torch::Tensor MakeGamesOBSTensor(std::vector<GameInst*>& games) {
 	return torch::from_blob(buf.data(), { (int64_t)totalPlayers, (int64_t)obsSize }, options).clone();
 }
 
+// Project one superset obs row to owner g's width. Identity (returns the row unchanged) when the
+// owner's column gather is undefined (single-policy / superset owner).
+static inline torch::Tensor ProjectRow(const torch::Tensor& fullRow, const torch::Tensor& colG) {
+	if (!colG.defined())
+		return fullRow;
+	return fullRow.index_select(0, colG);
+}
+
 void _RunFunc(ThreadAgent* ta) {
 	RG_NOGRAD;
 	ta->isRunning = true;
@@ -56,7 +64,21 @@ void _RunFunc(ThreadAgent* ta) {
 
 	constexpr bool halfPrec = false;
 
-	auto policy = mgr->policy;
+	auto& policies = mgr->policies;
+	auto& colIdx = mgr->colIdx;
+	bool singlePolicy = mgr->singlePolicy;
+
+	// Per-owner flat row index tensors (constant across steps). Built once. In single-policy mode
+	// owner 0 owns every row (identity), so the gather/scatter is a no-op.
+	std::vector<torch::Tensor> rowIdxT;
+	if (!singlePolicy) {
+		for (int g = 0; g < (int)policies.size(); g++) {
+			auto rows = mgr->BuildRowIdx(g, numGames);
+			rowIdxT.push_back(
+				torch::from_blob(rows.data(), { (int64_t)rows.size() }, torch::TensorOptions().dtype(torch::kLong)).clone()
+			);
+		}
+	}
 
 	while (ta->shouldRun) {
 
@@ -70,33 +92,47 @@ void _RunFunc(ThreadAgent* ta) {
 		while (mgr->disableCollection)
 			THREAD_WAIT();
 
-		// Move our current OBS tensor to the device we run the policy on
-		// This conversion time is not counted as a part of policy inference time
-		torch::Tensor curObsTensorDevice;
-		if (halfPrec) {
-			curObsTensorDevice = curObsTensor.to(RG_HALFPERC_TYPE).to(device, true);
-		} else {
-			curObsTensorDevice = curObsTensor.to(device, true);
-		}
-
-		// Infer the policy to get actions for all our agents in all our games
+		// Infer actions for all our agents in all our games.
 		Timer policyInferTimer = {};
-		
 
 		if (blockConcurrentInfer)
 			mgr->inferMutex.lock();
-		RLGPC::GaussianPolicy::ActionResult actionResults;
+
+		int totalPlayers = (int)curObsTensor.size(0);
+		int nControls = (int)policies[0]->config.nControls;
+
+		GaussianPolicy::ActionResult actionResults;
 		try {
-			actionResults = policy->GetAction(curObsTensorDevice, deterministic);
+			if (singlePolicy) {
+				// Byte-identical to the historical single-policy path.
+				torch::Tensor curObsTensorDevice = halfPrec
+					? curObsTensor.to(RG_HALFPERC_TYPE).to(device, true)
+					: curObsTensor.to(device, true);
+				actionResults = policies[0]->GetAction(curObsTensorDevice, deterministic);
+				if (halfPrec) {
+					actionResults.action = actionResults.action.to(torch::ScalarType::Float);
+					actionResults.logProb = actionResults.logProb.to(torch::ScalarType::Float);
+				}
+			} else {
+				// Multi-policy: per-owner column-project the superset obs to that owner's width, run that
+				// owner's policy on just its rows, and scatter the per-slot actions back into full tensors.
+				auto fullAction = torch::zeros({ (int64_t)totalPlayers, (int64_t)nControls }, torch::TensorOptions().dtype(at::kFloat));
+				auto fullLogProb = torch::zeros({ (int64_t)totalPlayers }, torch::TensorOptions().dtype(at::kFloat));
+				for (int g = 0; g < (int)policies.size(); g++) {
+					torch::Tensor projG = colIdx[g].defined() ? curObsTensor.index_select(1, colIdx[g]) : curObsTensor;
+					torch::Tensor ownerObs = projG.index_select(0, rowIdxT[g]).to(device, true);
+					auto res = policies[g]->GetAction(ownerObs, deterministic);
+					fullAction.index_copy_(0, rowIdxT[g], res.action);
+					fullLogProb.index_copy_(0, rowIdxT[g], res.logProb);
+				}
+				actionResults.action = fullAction;
+				actionResults.logProb = fullLogProb;
+			}
 		} catch (std::exception& e) {
 			RG_ERR_CLOSE("Exception during policy->GetAction(): " << e.what());
 		}
 		if (blockConcurrentInfer)
 			mgr->inferMutex.unlock();
-		if (halfPrec) {
-			actionResults.action = actionResults.action.to(torch::ScalarType::Float);
-			actionResults.logProb = actionResults.logProb.to(torch::ScalarType::Float);
-		}
 
 		float policyInferTime = policyInferTimer.Elapsed();
 		ta->times.policyInferTime += policyInferTime;
@@ -104,7 +140,6 @@ void _RunFunc(ThreadAgent* ta) {
 		// Step the gym with the actions we got
 		Timer gymStepTimer = {};
 		ta->gameStepMutex.lock();
-		float avgRew = 0;
 		auto stepResults = new RLGSC::Gym::StepResult[numGames];
 		int actionsOffset = 0;
 		for (int i = 0; i < numGames; i++) {
@@ -132,7 +167,9 @@ void _RunFunc(ThreadAgent* ta) {
 		torch::Tensor nextObsTensor = MakeGamesOBSTensor(games);
 
 		if (!render) {
-			// Steps complete, add all timestep data to our trajectories, for each game
+			// Steps complete, add all timestep data to our trajectories, for each game. The stored
+			// obs is the OWNER's projected width (identity in single-policy mode), so each member's
+			// actor/critic/fsp see the width they were trained on (mirrors rollout.py:stored_obs).
 			Timer trajAppendTimer = {};
 			ta->trajMutex.lock();
 			for (int i = 0, playerOffset = 0; i < numGames; i++) {
@@ -147,18 +184,23 @@ void _RunFunc(ThreadAgent* ta) {
 				auto tTruncated = torch::tensor(truncated);
 
 				for (int j = 0; j < numPlayers; j++) {
+					int row = playerOffset + j;
+					int owner = singlePolicy ? 0 : mgr->slotOwners[j];
+					torch::Tensor storedCur = ProjectRow(curObsTensor[row], colIdx[owner]);
+					torch::Tensor storedNext = ProjectRow(nextObsTensor[row], colIdx[owner]);
+
 					ta->trajectories[i][j].AppendSingleStep(
 						{
-							curObsTensor[playerOffset + j],
-							actionResults.action[playerOffset + j],
-							actionResults.logProb[playerOffset + j],
+							storedCur,
+							actionResults.action[row],
+							actionResults.logProb[row],
 							torch::tensor(stepResult.reward[j]),
 
 #ifdef RG_PARANOID_MODE
 							torch::Tensor(),
 #endif
 
-							nextObsTensor[playerOffset + j],
+							storedNext,
 							tDone,
 							tTruncated
 						}

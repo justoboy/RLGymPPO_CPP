@@ -119,33 +119,58 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 		delete envCreateResult.match;
 	}
 
-	// The Perceiver's obs layout must match the actual flat obs width from the env
-	if (config.ppo.perceiver.queryFeatures
-		+ config.ppo.perceiver.nTokens * config.ppo.perceiver.kvFeatures
-		+ config.ppo.perceiver.nTokens != (int)obsSize)
-		RG_ERR_CLOSE(
-			"Learner: PerceiverConfig obs layout (" << config.ppo.perceiver.queryFeatures << " + "
-			<< config.ppo.perceiver.nTokens << "*" << config.ppo.perceiver.kvFeatures << " + "
-			<< config.ppo.perceiver.nTokens << " = "
-			<< (config.ppo.perceiver.queryFeatures + config.ppo.perceiver.nTokens * config.ppo.perceiver.kvFeatures + config.ppo.perceiver.nTokens)
-			<< ") does not match env obs size " << obsSize << "; fix LearnerConfig.ppo.perceiver"
-		);
-	if (config.ppo.perceiver.nControls != actionAmount)
-		RG_ERR_CLOSE("Learner: PerceiverConfig.nControls (" << config.ppo.perceiver.nControls << ") != env action amount " << actionAmount);
+	// Resolve the per-member Perceiver specs. Empty memberPerceiver => single member (ppo.perceiver).
+	std::vector<PerceiverConfig> memberSpecs;
+	if (config.memberPerceiver.empty())
+		memberSpecs.push_back(config.ppo.perceiver);
+	else
+		memberSpecs = config.memberPerceiver;
 
-	RG_LOG("\tCreating experience buffer...");
-	expBuffer = new ExperienceBuffer(config.expBufferSize, config.randomSeed, device);
+	// The superset (widest) member layout must match the actual flat obs width from the env.
+	{
+		PerceiverConfig sup = memberSpecs[0];
+		for (auto& ms : memberSpecs)
+			sup = (ms.entityFeatures > sup.entityFeatures) ? ms : sup;
+		if (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens != (int)obsSize)
+			RG_ERR_CLOSE(
+				"Learner: superset PerceiverConfig obs layout (" << sup.queryFeatures << " + "
+				<< sup.nTokens << "*" << sup.kvFeatures << " + " << sup.nTokens << " = "
+				<< (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens)
+				<< ") does not match env obs size " << obsSize << "; fix LearnerConfig member perceiver"
+			);
+		if (sup.nControls != actionAmount)
+			RG_ERR_CLOSE("Learner: PerceiverConfig.nControls (" << sup.nControls << ") != env action amount " << actionAmount);
+	}
 
-	RG_LOG("\tCreating PPO Learner...");
-	ppo = new PPOLearner(config.ppo, device);
+	// One PPO learner + experience buffer + return-stat per member (owner id).
+	for (size_t g = 0; g < memberSpecs.size(); g++) {
+		RG_LOG("\tCreating PPO Learner for member " << g << "...");
+		PPOLearnerConfig mcfg = config.ppo;
+		mcfg.perceiver = memberSpecs[g];
+		ppos.push_back(new PPOLearner(mcfg, device));
 
+		RG_LOG("\tCreating experience buffer for member " << g << "...");
+		buffers.push_back(new ExperienceBuffer(config.expBufferSize, config.randomSeed + (int)g, device));
+
+		returnStats.push_back(WelfordRunningStat(1));
+	}
+
+	// slotOwners: which member owns each slot. Empty => single member (every slot owned by member 0).
+	slotOwners = config.slotOwners;
+
+	// Hand the manager the per-member policies + owner map. Its constructor derives the superset layout
+	// and per-owner column gathers from the policies (single-policy when there's exactly one).
 	RG_LOG("\tCreating agent manager...");
+	std::vector<GaussianPolicy*> memberPolicies;
+	for (auto* ppo : ppos)
+		memberPolicies.push_back(ppo->policy);
 	agentMgr = new ThreadAgentManager(
-		ppo->policy, expBuffer,
+		memberPolicies, slotOwners,
 		config.standardizeOBS, config.deterministic, device.is_cpu() && torch::get_num_threads() > 1,
 		(uint64_t)(config.timestepsPerIteration * 1.5f),
 		device
 	);
+	agentMgr->nControls = actionAmount;
 
 	RG_LOG("\tCreating " << config.numThreads << " agents...");
 	agentMgr->CreateAgents(envCreateFn, config.numThreads, config.numGamesPerThread);
@@ -193,7 +218,7 @@ nlohmann::json MakeJSONArray(const std::vector<T> list) {
 	return result;
 }
 
-void RLGPC::Learner::SaveStats(std::filesystem::path path) {
+void RLGPC::Learner::SaveStats(std::filesystem::path path, int member) {
 	using namespace nlohmann;
 
 	constexpr const char* ERROR_PREFIX = "Learner::SaveStats(): ";
@@ -204,7 +229,7 @@ void RLGPC::Learner::SaveStats(std::filesystem::path path) {
 
 	json j = {};
 	j["cumulative_timesteps"] = totalTimesteps;
-	j["cumulative_model_updates"] = ppo->cumulativeModelUpdates;
+	j["cumulative_model_updates"] = ppos[member]->cumulativeModelUpdates;
 	j["epoch"] = totalEpochs;
 	
 	if (skillTracker) {
@@ -220,10 +245,11 @@ void RLGPC::Learner::SaveStats(std::filesystem::path path) {
 
 	auto& rrs = j["reward_running_stats"];
 	{
-		rrs["mean"] = MakeJSONArray(returnStats.runningMean);
-		rrs["var"] = MakeJSONArray(returnStats.runningVariance);
-		rrs["shape"] = returnStats.shape;
-		rrs["count"] = returnStats.count;
+		auto& rs = returnStats[member];
+		rrs["mean"] = MakeJSONArray(rs.runningMean);
+		rrs["var"] = MakeJSONArray(rs.runningVariance);
+		rrs["shape"] = rs.shape;
+		rrs["count"] = rs.count;
 	}
 
 	if (config.sendMetrics)
@@ -233,7 +259,7 @@ void RLGPC::Learner::SaveStats(std::filesystem::path path) {
 	fOut << jStr;
 }
 
-void RLGPC::Learner::LoadStats(std::filesystem::path path) {
+void RLGPC::Learner::LoadStats(std::filesystem::path path, int member) {
 	// TODO: Repetitive code, merge repeated code into one function called from both SaveStats() and LoadStats()
 
 	using namespace nlohmann;
@@ -245,7 +271,7 @@ void RLGPC::Learner::LoadStats(std::filesystem::path path) {
 
 	json j = json::parse(fIn);
 	totalTimesteps = j["cumulative_timesteps"];
-	ppo->cumulativeModelUpdates = j["cumulative_model_updates"];
+	ppos[member]->cumulativeModelUpdates = j["cumulative_model_updates"];
 	totalEpochs = j["epoch"];
 	
 	if (skillTracker && j.contains("skill_rating")) {
@@ -254,10 +280,11 @@ void RLGPC::Learner::LoadStats(std::filesystem::path path) {
 
 	auto& rrs = j["reward_running_stats"];
 	{
-		returnStats = WelfordRunningStat(rrs["shape"]);
-		returnStats.runningMean = rrs["mean"].get<std::vector<double>>();
-		returnStats.runningVariance = rrs["var"].get<std::vector<double>>();
-		returnStats.count = rrs["count"];
+		WelfordRunningStat rs(rrs["shape"]);
+		rs.runningMean = rrs["mean"].get<std::vector<double>>();
+		rs.runningVariance = rrs["var"].get<std::vector<double>>();
+		rs.count = rrs["count"];
+		returnStats[member] = rs;
 	}
 
 	if (j.contains("run_id"))
@@ -275,8 +302,12 @@ void RLGPC::Learner::Save() {
 	std::filesystem::create_directories(saveFolder);
 
 	RG_LOG("Saving to folder " << saveFolder << "...");
-	SaveStats(saveFolder / STATS_FILE_NAME);
-	ppo->SaveTo(saveFolder);
+	for (size_t g = 0; g < ppos.size(); g++) {
+		std::filesystem::path memberFolder = saveFolder / ("member_" + std::to_string(g));
+		std::filesystem::create_directories(memberFolder);
+		SaveStats(memberFolder / STATS_FILE_NAME, (int)g);
+		ppos[g]->SaveTo(memberFolder);
+	}
 
 	// Remove old checkpoints
 	if (config.checkpointsToKeep != -1) {
@@ -329,11 +360,14 @@ void RLGPC::Learner::Load() {
 	if (highest != -1) {
 		std::filesystem::path loadFolder = config.checkpointLoadFolder / std::to_string(highest);
 		RG_LOG(" > Loading checkpoint " << loadFolder << "...");
-		LoadStats(loadFolder / STATS_FILE_NAME);
-		ppo->LoadFrom(loadFolder);
+		for (size_t g = 0; g < ppos.size(); g++) {
+			std::filesystem::path memberFolder = loadFolder / ("member_" + std::to_string(g));
+			LoadStats(memberFolder / STATS_FILE_NAME, (int)g);
+			ppos[g]->LoadFrom(memberFolder);
+		}
 		RG_LOG(" > Done.");
 
-		if (config.skillTrackerConfig.loadOldVersionsFromCheckpoints) {
+		if (config.skillTrackerConfig.loadOldVersionsFromCheckpoints && ppos.size() == 1) {
 			RG_LOG("Attempting to load " << config.skillTrackerConfig.maxVersions << " old versions for skill tracker...");
 
 			int64_t targetInterval = config.skillTrackerConfig.timestepsPerVersion;
@@ -379,7 +413,7 @@ void RLGPC::Learner::Load() {
 						"rating: " << bestRating
 					);
 
-					auto oldPolicy = ppo->LoadAdditionalPolicy(config.checkpointLoadFolder / std::to_string(bestTimesteps));
+					auto oldPolicy = ppos[0]->LoadAdditionalPolicy(config.checkpointLoadFolder / std::to_string(bestTimesteps));
 
 					if (oldPolicy) {
 						skillTracker->AppendOldPolicy(
@@ -474,37 +508,41 @@ void RLGPC::Learner::StopAgents() {
 // One collect+learn iteration. This is the body that used to live inside Learn()'s while loop,
 // lifted out so an external driver can interleave multiple single-policy learners (Jacobi league:
 // freeze all -> collect -> update each). Behavior is identical to the inlined loop body.
-RLGPC::Report RLGPC::Learner::RunIteration() {
-	Report report = {};
+std::vector<RLGPC::Report> RLGPC::Learner::RunIteration() {
+	std::vector<Report> reports(ppos.size());
 
 	agentMgr->SetStepCallback(stepCallback);
 
-	// Collect the desired timesteps from our agents
-	GameTrajectory timesteps = agentMgr->CollectTimesteps(config.timestepsPerIteration);
+	// Collect the desired timesteps from our agents. One trajectory per member (owner id).
+	std::vector<GameTrajectory> memberTrajs = agentMgr->CollectTimesteps(config.timestepsPerIteration);
 	double relCollectionTime = epochTimer.Elapsed();
-	uint64_t timestepsCollected = timesteps.size; // Use actual size instead of target size
+	uint64_t timestepsCollected = 0;
+	for (auto& t : memberTrajs)
+		timestepsCollected += t.size; // Use actual size instead of target size
 
 	totalTimesteps += timestepsCollected;
 
 	if (config.ppo.policyLR == 0 && config.ppo.criticLR == 0) {
 		RG_LOG("\tBoth LRs are set to zero. Skipping consumption!");
 #ifdef RG_CUDA_SUPPORT
-		if (ppo->device.is_cuda())
+		if (ppos[0]->device.is_cuda())
 			c10::cuda::CUDACachingAllocator::emptyCache();
 #endif
 		epochTimer.Reset();
 		agentMgr->ResetMetrics();
-		return report;
+		return reports;
 	}
 
 	if (!config.collectionDuringLearn)
 		agentMgr->disableCollection = true;
 
-	// Add it to our experience buffer, also computing GAE in the process
-	try {
-		AddNewExperience(timesteps, report);
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("Exception during Learner::AddNewExperience(): " << e.what());
+	// Add each member's experience to its own buffer, also computing GAE in the process
+	for (size_t g = 0; g < memberTrajs.size(); g++) {
+		try {
+			AddNewExperience(memberTrajs[g], (int)g, reports[g]);
+		} catch (std::exception& e) {
+			RG_ERR_CLOSE("Exception during Learner::AddNewExperience(): " << e.what());
+		}
 	}
 
 	Timer ppoLearnTimer = {};
@@ -513,7 +551,7 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 	// This is because learning is very GPU intensive, and letting iterations collect during that time slows it down
 	// On CPU, learning is its own thread, it's better to keep collecting
 	// Also, if config.collectionDuringLearn is false, we ignore this
-	bool blockAgentInferDuringLearn = config.collectionDuringLearn && !ppo->device.is_cpu();
+	bool blockAgentInferDuringLearn = config.collectionDuringLearn && !ppos[0]->device.is_cpu();
 	{ // Run the actual PPO learning on the experience we have collected
 
 		if (config.deterministic) {
@@ -527,10 +565,12 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 		if (blockAgentInferDuringLearn)
 			agentMgr->disableCollection = true;
 
-		try {
-			ppo->Learn(expBuffer, report);
-		} catch (std::exception& e) {
-			RG_ERR_CLOSE("Exception during PPOLearner::Learn(): " << e.what());
+		for (size_t g = 0; g < ppos.size(); g++) {
+			try {
+				ppos[g]->Learn(buffers[g], reports[g]);
+			} catch (std::exception& e) {
+				RG_ERR_CLOSE("Exception during PPOLearner::Learn(): " << e.what());
+			}
 		}
 
 		if (blockAgentInferDuringLearn)
@@ -541,7 +581,7 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 
 	// Free CUDA cache
 #ifdef RG_CUDA_SUPPORT
-	if (ppo->device.is_cuda())
+	if (ppos[0]->device.is_cuda())
 		c10::cuda::CUDACachingAllocator::emptyCache();
 #endif
 
@@ -557,14 +597,15 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 		if (config.skillTrackerConfig.stepCallback == NULL)
 			skillTracker->config.stepCallback = stepCallback;
 
-		skillTracker->RunGames(ppo->policy, timestepsCollected);
+		skillTracker->RunGames(ppos[0]->policy, timestepsCollected);
 		for (auto& pair : skillTracker->curRating.data) {
 			std::string metricName = RS_STR("Skill Rating" << (pair.first.empty() ? "" : " ") << pair.first);
-			report[metricName] = pair.second;
+			reports[0][metricName] = pair.second;
 		}
 	}
 
 	// Get all metrics from agent manager
+	Report& report = reports[0];
 	agentMgr->GetMetrics(report);
 
 	if (!config.collectionDuringLearn) {
@@ -599,7 +640,7 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 	// Call iteration callback
 	if (iterationCallback) {
 		RG_LOG("Calling iteration callback...");
-		iterationCallback(this, report);
+		iterationCallback(this, reports);
 	}
 
 	{ // Print results
@@ -614,7 +655,7 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 
 	// Update metric sender
 	if (config.sendMetrics)
-		metricSender->Send(report);
+		metricSender->Send(report); // report aliases reports[0]
 
 	// Save if needed
 	tsSinceSave += timestepsCollected;
@@ -626,7 +667,7 @@ RLGPC::Report RLGPC::Learner::RunIteration() {
 	// Reset everything
 	agentMgr->ResetMetrics();
 
-	return report;
+	return reports;
 }
 
 void RLGPC::Learner::Learn() {
@@ -646,8 +687,11 @@ void RLGPC::Learner::Learn() {
 	StopAgents();
 }
 
-void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) {
+void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, int member, Report& report) {
 	RG_NOGRAD;
+
+	PPOLearner* ppo = ppos[member];
+	ExperienceBuffer* expBuffer = buffers[member];
 
 	RG_LOG("Adding experience...");
 
@@ -689,7 +733,7 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 		c10::cuda::CUDACachingAllocator::emptyCache();
 #endif
 	
-	float retStd = (config.standardizeReturns ? returnStats.GetSTD()[0] : 1);
+	float retStd = (config.standardizeReturns ? returnStats[member].GetSTD()[0] : 1);
 
 	// Compute GAE stuff
 	torch::Tensor advantages, valueTargets;
@@ -719,7 +763,7 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 
 	if (config.standardizeReturns) {
 		int numToIncrement = RS_MIN(config.maxReturnsPerStatsInc, returns.size());
-		returnStats.Increment(returns, numToIncrement);
+		returnStats[member].Increment(returns, numToIncrement);
 	}
 
 	// FSP auxiliary: target = the next obs's self-entity feature block (first entityFeatures columns
@@ -728,8 +772,8 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 	// episode ends the target is masked out, so its (arbitrary) value is irrelevant. Mirrors
 	// rollout.py: target = new_o[a][0][0, 0, :ef], mask = 0 at term/trunc else 1.
 	torch::Tensor fspTarget, fspMask;
-	if (config.ppo.lambdaFSP != 0) {
-		int ef = config.ppo.perceiver.entityFeatures;
+	if (ppo->config.lambdaFSP != 0) {
+		int ef = ppo->config.perceiver.entityFeatures;
 		fspTarget = trajData.nextStates.slice(1, 0, ef);
 		fspMask = (1 - trajData.dones) * (1 - trajData.truncateds);
 	}
@@ -758,7 +802,8 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) 
 }
 
 void RLGPC::Learner::UpdateLearningRates(float policyLR, float criticLR) {
-	ppo->UpdateLearningRates(policyLR, criticLR);
+	for (auto* p : ppos)
+		p->UpdateLearningRates(policyLR, criticLR);
 }
 
 std::vector<RLGPC::Report> RLGPC::Learner::GetAllGameMetrics() {
@@ -776,9 +821,9 @@ std::vector<RLGPC::Report> RLGPC::Learner::GetAllGameMetrics() {
 }
 
 RLGPC::Learner::~Learner() {
-	delete ppo;
+	for (auto* p : ppos) delete p;
+	for (auto* b : buffers) delete b;
 	delete agentMgr;
-	delete expBuffer;
 	delete metricSender;
 	delete renderSender;
 	if (s_interpreterOwnedByUs) {
