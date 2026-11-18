@@ -8,7 +8,6 @@
 #include <RLGymSim_CPP/Utils/TerminalConditions/GoalScoreCondition.h>
 #include <RLGymSim_CPP/Utils/OBSBuilders/TemporalObsBuilder.h>
 #include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
-#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
 #include <RLGymSim_CPP/Utils/ActionParsers/ContinuousActionParser.h>
 #include <cstdio>
 
@@ -31,17 +30,12 @@ int main() {
 	};
 	auto obs = new TemporalObsBuilder();
 	obs->activeMode = GameMode::SOCCAR;
-	obs->nBlue = 1;
-	obs->nOrange = 1;
 	auto ap = new ContinuousActionParser(8);
 
-	// Mutator sequence path (the production factory path), not RandomState.
-	auto teamSetter = new TeamConfigMutator(123u);
-	auto modeSetter = new ModeSamplerMutator(obs, 124u);
-	auto spawnSetter = new SpawnCurriculumMutator(false, 1.0f, 0.5f, 125u);
-	auto sequence = new MutatorSequence(std::vector<StateSetter*>{ teamSetter, modeSetter, spawnSetter });
+	// Random-kickoff resetter (the production factory path). Mode is fixed at Arena::Create time.
+	auto stateSetter = new RandomState(true, true, true);
 
-	Match* match = new Match(rewards, tcs, obs, ap, sequence, 1, true);
+	Match* match = new Match(rewards, tcs, obs, ap, stateSetter, 1, true);
 
 	printf("build gym...\n"); fflush(stdout);
 	Gym* gym = new Gym(match, 8, CAR_CONFIG_OCTANE, GameMode::SOCCAR, MutatorConfig(GameMode::SOCCAR));

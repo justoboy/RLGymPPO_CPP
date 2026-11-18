@@ -23,6 +23,7 @@ matches the source bit-for-bit (sha256 of the float32 bytes).
 """
 import argparse
 import hashlib
+import json
 import os
 import struct
 import sys
@@ -59,6 +60,44 @@ def _write_blob(path: str, state_dict: dict) -> None:
             for d in dims:
                 f.write(struct.pack("<I", int(d)))
             f.write(v.numpy().tobytes(order="C"))
+
+
+# --- spec -> C++ PerceiverConfig width derivation ---------------------------------------------
+# Mirrors reference/bot_spec.py + constants.py so the (py3.9) driver can build a matching
+# PerceiverConfig WITHOUT importing reference (earl_pytorch is py3.14-only). These literals MUST
+# stay in sync with reference/constants.py: WORLD_FEATURES=25, N_PROFILE_FEATURES=14, QUERY_TAIL=169,
+# RELATIVE_FEATURES=30, MAX_TEAM=4 (=> 2*MAX_TEAM=8 car slots), MAX_BOOST_PADS=34, N_TEMPORAL_FRAMES=13.
+_WORLD_FEATURES = 25
+_N_PROFILE_FEATURES = 14
+_QUERY_TAIL = 169
+_RELATIVE_FEATURES = 30
+_MAX_TEAM = 4
+_MAX_BOOST_PADS = 34
+_N_CONTROLS = 9
+
+
+def spec_to_layout(spec_dict: dict) -> dict:
+    """Derive the C++ PerceiverConfig widths from a checkpoint's recorded BotSpec dict.
+
+    entity_features = 25 + (14 if profile else 0)
+    query_features  = entity_features + QUERY_TAIL(169)
+    kv_features     = entity_features + RELATIVE_FEATURES(30)
+    n_tokens        = n_frames * (1 + 2*MAX_TEAM) + MAX_BOOST_PADS  (13*9 + 34 = 151)
+    head_type       = 'continuous' | 'discrete' (from spec.head)
+    """
+    profile = bool(spec_dict.get("profile", True))
+    n_frames = int(spec_dict.get("n_frames", 13))
+    ef = _WORLD_FEATURES + (_N_PROFILE_FEATURES if profile else 0)
+    return {
+        "entity_features": ef,
+        "query_features": ef + _QUERY_TAIL,
+        "kv_features": ef + _RELATIVE_FEATURES,
+        "n_tokens": n_frames * (1 + 2 * _MAX_TEAM) + _MAX_BOOST_PADS,
+        "n_controls": _N_CONTROLS,
+        "head": str(spec_dict.get("head", "continuous")),
+        "profile": profile,
+        "n_frames": n_frames,
+    }
 
 
 def _read_blob(path: str) -> dict:
@@ -127,6 +166,18 @@ def convert(in_path: str, out_folder: str) -> None:
         print(f"[ok] {label}: {len(src)} tensors -> {path}")
 
     print(f"[done] converted {in_path} -> {out_folder}")
+
+    # Sidecar: if the checkpoint recorded its BotSpec, derive + emit the C++ PerceiverConfig widths so
+    # the (py3.9) driver can build a matching learner without importing reference. Absent spec -> no
+    # sidecar (the driver falls back to a caller-supplied layout, e.g. the native smoke layout).
+    spec_dict = ck.get("spec")
+    if isinstance(spec_dict, dict):
+        layout = spec_to_layout(spec_dict)
+        with open(os.path.join(out_folder, "spec.json"), "w", encoding="utf-8") as f:
+            json.dump(layout, f, indent=2, sort_keys=True)
+        print(f"[ok] spec.json -> {layout}")
+    else:
+        print("[info] checkpoint has no recorded 'spec'; no spec.json sidecar emitted")
 
 
 def main():

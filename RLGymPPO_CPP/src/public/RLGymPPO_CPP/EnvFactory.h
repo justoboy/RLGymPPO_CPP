@@ -40,15 +40,9 @@ namespace RLGPC {
 		bool spawnOpponents = true;
 
 		// Fixed arena mode for this env (the league builds one env per mode). Maps to GameMode.
+		// The arena's mode is fixed at Arena::Create() (Gym construction) time, so mode selection is
+		// per-env, not per-episode; the single StateSetter is just the random-kickoff resetter.
 		GameMode gameMode = GameMode::SOCCAR;
-
-		// Spawn-curriculum overlay (SpawnCurriculumMutator). Disabled by default -> native kickoff only.
-		bool spawnCurriculumEnabled = false;
-		float spawnCurriculumRatio = 1.0f;
-		float spawnCurriculumProb = 0.5f;
-
-		// Per-episode RNG seed for the kickoff + custom-spawn coin flip.
-		uint32_t mutatorSeed = 0;
 
 		// Perceiver obs layout must match TemporalObsBuilder's output for this config.
 		int queryFeatures = 208;

@@ -136,20 +136,19 @@ int main() {
 	cfg.ppo.policyLR = 2e-4;
 	cfg.ppo.criticLR = 2e-4;
 
-	// EARL Perceiver architecture. These MUST match what TemporalObsBuilder emits with
-	// its default config (maxPlayers=4, nFrames=13, maxBoostPads=34):
-	//   E (per-frame entity slots) = 1(ball) + maxPlayers*2(cars) + maxBoostPads = 1+8+34 = 43
-	//   nTokens = F*E = 13*43 = 559
-	//   queryFeatures = 39(self)+12(ball)+0(mode)+6(mutator)+2(team-size) = 59
-	//   kvFeatures    = 30 (entity feature dims)
-	//   obsSize       = 59 + 559*30 + 559 = 17388
-	// (The BC checkpoint's main BotSpec uses a wider 208/69/151 layout; the parity gate
-	//  exercises that layout against the real checkpoint. This example runs from random
-	//  init at the builder's native width just to smoke-test the learner loop.)
+	// EARL Perceiver architecture. TemporalObsBuilder now emits a FIXED canonical superset layout:
+	//   queryFeatures = 208 (self entity row 39 + ball block 12 + tactical/mode/mutator + tiles + team-size)
+	//   kvFeatures    = 69
+	//   nTokens       = F*n_bc + MAX_BOOST_PADS = 13*9 + 34 = 151
+	//   entityFeatures= 39 (25 world + 14 behavioral profile)
+	//   obsSize       = 208 + 151*69 + 151 = 10778
+	// This is the same layout the BC checkpoints and the parity gate use, so the example runs the
+	// real (league superset) contract end-to-end.
 	cfg.ppo.perceiver = PerceiverConfig{};
-	cfg.ppo.perceiver.queryFeatures = 59;
-	cfg.ppo.perceiver.kvFeatures = 30;
-	cfg.ppo.perceiver.nTokens = 559;
+	cfg.ppo.perceiver.queryFeatures = 208;
+	cfg.ppo.perceiver.kvFeatures = 69;
+	cfg.ppo.perceiver.nTokens = 151;
+	cfg.ppo.perceiver.entityFeatures = 39;
 	
 	cfg.sendMetrics = false; // Smoke run: no metrics server needed
 	cfg.renderMode = false; // Don't render

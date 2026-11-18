@@ -44,17 +44,18 @@ set_target_properties(RLGymPPO_CPP PROPERTIES CXX_STANDARD 20)
 add_subdirectory(RLGymSim_CPP)
 target_link_libraries(RLGymPPO_CPP PUBLIC RLGymSim_CPP)
 
-# Parity gate executable: compiles the model sources directly (no DLL import macros) and
-# links the static sim + Torch, so it can be run standalone to validate C++/Python parity.
-add_executable(ParityGate
+# Model-side parity gate executable: compiles the model sources directly (no DLL import macros) and
+# links the static sim + Torch, so it can be run standalone to validate C++/Python parity of the
+# actor/FSP forward. Named ModelParityGate to avoid colliding with the sim's obs-builder ParityGate.
+add_executable(ModelParityGate
 	"${PROJECT_SOURCE_DIR}/../tools/parity_main.cpp"
 	"src/private/RLGymPPO_CPP/Model/EARLPerceiver.cpp"
 	"src/private/RLGymPPO_CPP/Model/PerceiverNet.cpp"
 	"src/private/RLGymPPO_CPP/Model/FSPNet.cpp"
 	"src/private/RLGymPPO_CPP/PPO/GaussianPolicy.cpp")
-target_include_directories(ParityGate PRIVATE "src/public" "src/private")
-target_link_libraries(ParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
-set_target_properties(ParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+target_include_directories(ModelParityGate PRIVATE "src/public" "src/private")
+target_link_libraries(ModelParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
+set_target_properties(ModelParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
 # Isolation test: does the live Gym env Reset() work in this environment (no torch/pybind/Learner)?
 add_executable(isolation_env "${PROJECT_SOURCE_DIR}/../tools/isolation_env.cpp")

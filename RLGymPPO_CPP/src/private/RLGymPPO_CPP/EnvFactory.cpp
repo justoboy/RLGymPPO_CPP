@@ -8,13 +8,15 @@
 #include <RLGymSim_CPP/Utils/TerminalConditions/NoTouchCondition.h>
 #include <RLGymSim_CPP/Utils/TerminalConditions/GoalScoreCondition.h>
 #include <RLGymSim_CPP/Utils/OBSBuilders/TemporalObsBuilder.h>
-#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
+#include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
 #include <RLGymSim_CPP/Utils/ActionParsers/ContinuousActionParser.h>
 
 using namespace RLGSC;
 
 namespace RLGPC {
 
+// The arena's game mode is fixed at Arena::Create() time (Gym construction), so the league builds one
+// env per mode rather than sampling per-episode. The single StateSetter is the random-kickoff resetter.
 static EnvCreateFn MakeEnvCreateFn(const EnvConfig& ec) {
 	return [ec]() -> EnvCreateResult {
 		auto rewards = new CombinedReward(
@@ -31,27 +33,20 @@ static EnvCreateFn MakeEnvCreateFn(const EnvConfig& ec) {
 			new GoalScoreCondition()
 		};
 
+		// Superset temporal obs builder: emits q(208) ++ kv(151*69) ++ m(151) per agent.
 		auto obs = new TemporalObsBuilder();
 		obs->activeMode = ec.gameMode;
-		obs->nBlue = ec.teamSize;
-		obs->nOrange = ec.spawnOpponents ? ec.teamSize : 0;
+		obs->tickSkip = ec.tickSkip;
+
 		auto actionParser = new ContinuousActionParser(ec.tickSkip);
-
-		// Chain: kickoff (mode/team) -> optional custom-spawn overlay. Each setter owns its config by
-		// value, so nothing dangles after this lambda returns.
-		auto teamSetter = new TeamConfigMutator(ec.mutatorSeed);
-		auto modeSetter = new ModeSamplerMutator(obs, ec.mutatorSeed + 1u);
-		auto spawnSetter = new SpawnCurriculumMutator(
-			ec.spawnCurriculumEnabled, ec.spawnCurriculumRatio, ec.spawnCurriculumProb, ec.mutatorSeed + 2u);
-
-		auto sequence = new MutatorSequence(std::vector<StateSetter*>{ teamSetter, modeSetter, spawnSetter });
+		auto stateSetter = new RandomState(true, true, true);
 
 		Match* match = new Match(
 			rewards,
 			terminalConditions,
 			obs,
 			actionParser,
-			sequence,
+			stateSetter,
 			ec.teamSize,
 			ec.spawnOpponents
 		);

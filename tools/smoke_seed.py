@@ -13,6 +13,7 @@ Two interpreters are involved because of an ABI split:
 So this script (run under anaconda 3.9) shells out to the venv python to build + convert the
 fixture, then loads the .pyd and seeds from the resulting WEIG folder.
 """
+import json
 import os
 import subprocess
 import sys
@@ -20,13 +21,6 @@ import tempfile
 
 VENV_PY = r"D:\RLBotTraining\reference\.venv\Scripts\python.exe"
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-
-# Native layout (must match build_seed_fixture.py + TemporalObsBuilder defaults).
-QUERY_FEATURES = 59
-KV_FEATURES = 30
-N_TOKENS = 559
-ENTITY_FEATURES = 30
-N_CONTROLS = 9
 
 # torch DLLs must be resolvable before importing the extension.
 for p in (
@@ -61,15 +55,25 @@ def main():
     weig = build_fixture(tmp)
     print("WEIG folder:", weig)
 
+    # Read the spec.json sidecar the converter emitted (the SAME spec-driven path league_driver uses).
+    with open(os.path.join(weig, "spec.json"), "r", encoding="utf-8") as f:
+        layout = json.load(f)
+    print("spec.json layout:", layout)
+    entity_features = int(layout["entity_features"])
+    query_features = int(layout["query_features"])
+    kv_features = int(layout["kv_features"])
+    n_tokens = int(layout["n_tokens"])
+    n_controls = int(layout["n_controls"])
+
     ec = L.EnvConfig()
     ec.teamSize = 1
     ec.spawnOpponents = True
     ec.gameMode = L.GameMode.SOCCAR
-    ec.nControls = N_CONTROLS
-    ec.entityFeatures = ENTITY_FEATURES
-    ec.queryFeatures = QUERY_FEATURES
-    ec.kvFeatures = KV_FEATURES
-    ec.nTokens = N_TOKENS
+    ec.nControls = n_controls
+    ec.entityFeatures = entity_features
+    ec.queryFeatures = query_features
+    ec.kvFeatures = kv_features
+    ec.nTokens = n_tokens
 
     cfg = L.LearnerConfig()
     cfg.deviceType = L.LearnerDeviceType.CPU
@@ -92,12 +96,12 @@ def main():
         pc.nDims = 256
         pc.nHeads = 8
         pc.nLayers = 1
-        pc.nControls = N_CONTROLS
+        pc.nControls = n_controls
         pc.headType = L.HeadType.CONTINUOUS
-        pc.entityFeatures = ENTITY_FEATURES
-        pc.queryFeatures = QUERY_FEATURES
-        pc.kvFeatures = KV_FEATURES
-        pc.nTokens = N_TOKENS
+        pc.entityFeatures = entity_features
+        pc.queryFeatures = query_features
+        pc.kvFeatures = kv_features
+        pc.nTokens = n_tokens
         return pc
 
     cfg.memberPerceiver = [perceiver(), perceiver()]
@@ -105,7 +109,7 @@ def main():
 
     learner = L.create_learner(ec, cfg)
     print("obs_size:", learner.obs_size)
-    assert learner.obs_size == QUERY_FEATURES + N_TOKENS * KV_FEATURES + N_TOKENS
+    assert learner.obs_size == query_features + n_tokens * kv_features + n_tokens
 
     # The actual thing under test: seed each member from the WEIG folder.
     learner.seed_member(0, weig)
