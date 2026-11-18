@@ -13,7 +13,7 @@ happen because `cmake.exe` and the libtorch runtime DLLs are not on your **PATH*
 > `Enabling CUDA support...` and list `torch_cuda.dll`/`c10_cuda.dll` in TORCH_DLLS.
 
 This is a **machine-level** setting, not a per-project one — fix it once and every
-project (reference, RLGymSim_CPP, rlgym, this one…) stops hitting it. Do **not** commit
+project on this machine (the sim, rlgym, this one…) stops hitting it. Do **not** commit
 a per-project `setup_env.cmd`; that is machine-specific and wrong to version-control.
 
 ---

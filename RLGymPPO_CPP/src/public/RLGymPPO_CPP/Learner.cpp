@@ -8,6 +8,7 @@
 #include <RLGymPPO_CPP/Threading/ThreadAgentManager.h>
 
 #include <torch/cuda.h>
+#include <ATen/Context.h>
 #include "../libsrc/json/nlohmann/json.hpp"
 #include <pybind11/embed.h>
 
@@ -101,6 +102,19 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 
 	torch::set_num_interop_threads(1);
 	torch::set_num_threads(1);
+
+	// O3a port: enable the TF32 tensor-core matmul/conv path on the CUDA device (no-op on CPU). This is
+	// a global libtorch flag, set once here at learner construction so every downstream forward/backward
+	// (collection infer + PPO learn) uses it. Mirrors the reference torch.backends.cuda.matmul.allow_tf32.
+	if (config.useTF32 && device.is_cuda()) {
+#ifdef RG_CUDA_SUPPORT
+		at::globalContext().setAllowTF32CuBLAS(true);
+		at::globalContext().setAllowTF32CuDNN(true);
+		RG_LOG("\tTF32 enabled for cuBLAS + cuDNN (O3a port)");
+#else
+		RG_LOG("\tWARNING: config.useTF32 requested but build has no CUDA support; ignoring.");
+#endif
+	}
 
 	if (RocketSim::GetStage() != RocketSimStage::INITIALIZED) {
 		RG_LOG("\tInitializing RocketSim...");

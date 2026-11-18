@@ -1,4 +1,4 @@
-"""Python league driver (P3-ML Step 5): the port of reference/main.py:run_epoch on top of the
+"""Python league driver (P3-ML Step 5): the port of the reference run_epoch on top of the
 generic pybind learner.
 
 The C++ learner is a single fixed-topology, multi-member unit: it owns one policy per "member"
@@ -16,7 +16,7 @@ the .pyd is built against anaconda py3.9. So this driver (run under anaconda 3.9
 .pyd) shells out to the venv python to run convert_bc_checkpoint.py, which writes the WEIG blobs
 (PPO_POLICY.lt / PPO_CRITIC.lt / PPO_FSP.lt) AND a spec.json sidecar carrying each member's exact
 Perceiver widths. The driver reads spec.json to build the matching PerceiverConfig WITHOUT importing
-reference (earl_pytorch is py3.14-only).
+the reference impl (earl_pytorch is py3.14-only).
 """
 import argparse
 import json
@@ -29,7 +29,9 @@ import sys
 NATIVE = dict(entity_features=30, query_features=59, kv_features=30, n_tokens=559,
               n_controls=9, head="continuous")
 
-VENV_PY = os.environ.get("REFERENCE_VENV_PY", r"D:\RLBotTraining\reference\.venv\Scripts\python.exe")
+# Reference-venv (py3.14) interpreter that has earl_pytorch. Set this in your environment; there is
+# intentionally no hard-coded default so the public repo carries no machine-specific private path.
+VENV_PY = os.environ["REFERENCE_VENV_PY"]
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -180,7 +182,7 @@ class LeagueDriver:
 
 
 def load_run_config(path):
-    """Minimal YAML-ish loader mirroring reference/train_config.py's schema (we avoid a yaml dep in
+    """Minimal YAML-ish loader mirroring the reference train_config schema (we avoid a yaml dep in
     the py3.9 anaconda env by parsing the small flat schema by hand)."""
     import yaml  # pyyaml is available in anaconda base; if not, the driver is unusable anyway
     with open(path, "r", encoding="utf-8") as f:

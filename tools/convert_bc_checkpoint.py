@@ -2,7 +2,7 @@
 """convert_bc_checkpoint.py — Phase 2 BC checkpoint -> portable binary state-dict converter.
 
 Reads a reference BC checkpoint (a pickled dict with `actor_state_dict` and
-`critic_state_dict` sub-dicts, see reference/agent.py) and writes each as a tiny
+`critic_state_dict` sub-dicts, see the reference agent module) and writes each as a tiny
 self-describing BINARY blob (see RLGPC::LoadStateDict in StateDictIO.h).
 
 Why not just torch.save the state_dict? Because torch's pickle archive format is NOT
@@ -63,9 +63,9 @@ def _write_blob(path: str, state_dict: dict) -> None:
 
 
 # --- spec -> C++ PerceiverConfig width derivation ---------------------------------------------
-# Mirrors reference/bot_spec.py + constants.py so the (py3.9) driver can build a matching
-# PerceiverConfig WITHOUT importing reference (earl_pytorch is py3.14-only). These literals MUST
-# stay in sync with reference/constants.py: WORLD_FEATURES=25, N_PROFILE_FEATURES=14, QUERY_TAIL=169,
+# Mirrors the reference bot_spec + constants so the (py3.9) driver can build a matching
+# PerceiverConfig WITHOUT importing the reference impl (earl_pytorch is py3.14-only). These literals
+# MUST stay in sync with the reference constants: WORLD_FEATURES=25, N_PROFILE_FEATURES=14, QUERY_TAIL=169,
 # RELATIVE_FEATURES=30, MAX_TEAM=4 (=> 2*MAX_TEAM=8 car slots), MAX_BOOST_PADS=34, N_TEMPORAL_FRAMES=13.
 _WORLD_FEATURES = 25
 _N_PROFILE_FEATURES = 14
@@ -168,7 +168,7 @@ def convert(in_path: str, out_folder: str) -> None:
     print(f"[done] converted {in_path} -> {out_folder}")
 
     # Sidecar: if the checkpoint recorded its BotSpec, derive + emit the C++ PerceiverConfig widths so
-    # the (py3.9) driver can build a matching learner without importing reference. Absent spec -> no
+    # the (py3.9) driver can build a matching learner without importing the reference impl. Absent spec -> no
     # sidecar (the driver falls back to a caller-supplied layout, e.g. the native smoke layout).
     spec_dict = ck.get("spec")
     if isinstance(spec_dict, dict):

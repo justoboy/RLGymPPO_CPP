@@ -14,7 +14,10 @@ namespace RLGPC {
 		int numGames;
 		std::vector<GameInst*> gameInsts;
 
-		bool shouldRun = false; // Set from thread
+		// Atomic: written by the main thread in Stop(), read by the worker in _RunFunc. Must be atomic so
+		// the worker observes the shutdown flag promptly (a stale read here previously caused a deadlock:
+		// once a worker parked in an inner wait loop it never re-read shouldRun, so Stop() spun forever).
+		std::atomic<bool> shouldRun = false;
 		std::atomic<bool> isRunning = false;
 
 		struct Times {

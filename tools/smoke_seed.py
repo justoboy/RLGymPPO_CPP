@@ -19,7 +19,9 @@ import subprocess
 import sys
 import tempfile
 
-VENV_PY = r"D:\RLBotTraining\reference\.venv\Scripts\python.exe"
+# Reference-venv (py3.14) interpreter that has earl_pytorch. Set this in your environment; there is
+# intentionally no hard-coded default so the public repo carries no machine-specific private path.
+VENV_PY = os.environ["REFERENCE_VENV_PY"]
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 
 # torch DLLs must be resolvable before importing the extension.

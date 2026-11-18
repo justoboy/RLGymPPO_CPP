@@ -77,6 +77,12 @@ namespace RLGPC {
 		int checkpointsToKeep = 5; // Checkpoint storage limit before old checkpoints are deleted, set to -1 to disable
 		LearnerDeviceType deviceType = LearnerDeviceType::AUTO; // Auto will use your CUDA GPU if available
 
+		// TF32 (O3a port): on Ampere+ (sm_86 = RTX 3090) the cuBLAS/cuDNN matmul+conv kernels default to
+		// full FP32. Enabling TF32 lets those kernels use the 19-bit tensor-core path — the reference O3a
+		// lever, measured 1.62x on the GPU step. It is a precision change (the matmul reduction accumulates
+		// in TF32), so it is opt-in and gated on the same relaxed ML quality bar as autocast. No-op on CPU.
+		bool useTF32 = false;
+
 		// Folder containing the RocketSim collision meshes (soccar/hoops/dropshot subfolders of .cmf
 		// files). Relative paths resolve against the process CWD, so prefer an ABSOLUTE path when the
 		// learner is embedded in a host (e.g. a Python driver) whose CWD you don't control.

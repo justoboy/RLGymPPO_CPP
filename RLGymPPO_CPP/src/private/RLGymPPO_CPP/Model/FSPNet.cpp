@@ -2,10 +2,10 @@
 #include <private/RLGymPPO_CPP/FrameworkTorch.h>
 #include <algorithm>
 
-// Mirrors reference.fsp.FSPNet._forward:
-//   res = self.earl(q, kv, m)            # (B, 1, 256)
-//   return self.head(self.relu(res))[:, 0, :]   # (B, entityFeatures)
-// Chunked along the batch (Python FSPNet.forward chunks to bound peak VRAM on full-batch calls).
+// FSP auxiliary head forward (reference-implementation parity):
+//   res = earl(q, kv, m)                       # (B, 1, 256)
+//   return head(relu(res))[:, 0, :]             # (B, entityFeatures)
+// Chunked along the batch to bound peak VRAM on full-batch calls.
 
 RLGPC::FSPNetImpl::FSPNetImpl(
 	EARLPerceiver earl, int64_t entityFeatures,

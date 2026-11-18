@@ -3,8 +3,8 @@
 #include <RLGymPPO_CPP/PPO/PPOLearnerConfig.h>
 
 // Switchable actor wrapper. The PerceiverNet trunk is identical for both arms; only the
-// head and the log_prob/entropy/sample math differ, mirroring reference.agent's
-// get_actor() dispatch on spec.head:
+// head and the log_prob/entropy/sample math differ, mirroring the reference get_actor()
+// dispatch on spec.head:
 //   CONTINUOUS (ContinuousPolicy): head -> [mean(nControls) || log_std(nControls)];
 //     policy = Independent Normal. log_std.clamp(-5,2); std = exp(log_std).clamp(1e-4,10);
 //     log_prob/entropy SUM over channels.

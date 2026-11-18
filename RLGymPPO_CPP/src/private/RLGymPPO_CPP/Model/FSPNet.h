@@ -2,9 +2,9 @@
 #include "EARLPerceiver.h"
 #include "../../../public/RLGymPPO_CPP/PPO/PPOLearnerConfig.h" // PerceiverConfig
 
-// Mirrors reference.fsp.FSPNet. The FSP auxiliary head shares the SAME EARLPerceiver trunk
-// instance the actor uses (the shared handle is passed in), so the auxiliary gradient flows into
-// the encoder the actor uses. Module/parameter names match the Python fsp_state_dict 1:1:
+// FSP auxiliary head. It shares the SAME EARLPerceiver trunk instance the actor uses (the
+// shared handle is passed in), so the auxiliary gradient flows into the encoder the actor uses.
+// Module/parameter names match the reference fsp_state_dict 1:1:
 //   fsp:  earl.*  head.weight head.bias
 // Forward() takes the FLAT per-player obs (q || kv || m, obsSize wide) and rebuilds the
 // (q, kv, m) tuple internally, chunked along the batch to bound VRAM (exactly like PerceiverNet).

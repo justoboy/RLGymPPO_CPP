@@ -3,7 +3,7 @@
 #include <vector>
 
 namespace RLGPC {
-	// Which actor head the PerceiverNet trunk projects into. Mirrors reference's
+	// Which actor head the PerceiverNet trunk projects into. Mirrors the reference
 	// BotSpec.head ("continuous" | "discrete"): the SAME EARLPerceiver trunk feeds either
 	// a continuous Gaussian head or a per-channel categorical head. The head type is the
 	// single source of truth for how the actor's output is interpreted (and how the env
@@ -14,10 +14,10 @@ namespace RLGPC {
 	// FLAT per-player obs (built by the sim's TemporalObsBuilder) is sliced back into the
 	// (q, kv, mask) tuple the Perceiver consumes:
 	//   flat obs = q(queryFeatures) ++ kv(nTokens * kvFeatures) ++ m(nTokens)
-	// Defaults match reference's main BotSpec (profile=True): entity_features=39,
+	// Defaults match the reference main BotSpec (profile=True): entity_features=39,
 	// query_features=208, kv_features=69, 151 temporal slots (13 frames x 11 cars + 34 pads).
 	struct PerceiverConfig {
-		// NOTE: matches reference.agent._make_earl == EARLPerceiver(256, 4, 8, 1, ...),
+		// NOTE: matches the reference _make_earl == EARLPerceiver(256, 4, 8, 1, ...),
 		// i.e. n_layers=4, n_heads=8 (the plan text had these swapped; the shipped BC
 		// checkpoints have 4 blocks, confirmed by their state-dict keys).
 		int nDims = 256;   // latent/embedding width
@@ -29,7 +29,7 @@ namespace RLGPC {
 		// (9 means + 9 log_stds); DISCRETE -> per-channel categorical over nBins.
 		HeadType headType = HeadType::CONTINUOUS;
 
-		// Per-channel bin counts for the DISCRETE arm. Mirrors reference.bc_expand.N_BINS:
+		// Per-channel bin counts for the DISCRETE arm. Mirrors the reference N_BINS:
 		//   col0 throttle(analog) col1 steer(analog) col2 pitch(ternary) col3 yaw(analog)
 		//   col4 roll(ternary) col5..8 binary -> [9,9,3,9,3,2,2,2,2]
 		std::vector<int> nBins = { 9, 9, 3, 9, 3, 2, 2, 2, 2 };
@@ -40,7 +40,7 @@ namespace RLGPC {
 		int nTokens = 151;       // temporal slots (13 frames x 11 cars + 34 boost pads)
 
 		// FSP auxiliary head output width (the self-entity feature block width the head predicts).
-		// Mirrors reference BotSpec.entity_features (39 when profile on). The FSP target is the
+		// Mirrors the reference BotSpec.entity_features (39 when profile on). The FSP target is the
 		// first entityFeatures columns of the next obs's query block.
 		int entityFeatures = 39;
 

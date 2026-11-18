@@ -2,16 +2,15 @@
 #include "EARLPerceiver.h"
 #include "../../../public/RLGymPPO_CPP/PPO/PPOLearnerConfig.h" // HeadType, PerceiverConfig
 
-// Mirrors reference.agent.ContinuousControlsHead and reference.agent.PerceiverNet.
-// Module/parameter names match the Python state dicts 1:1 (after the converter strips
-// the actor's "net." prefix):
+// Reference-implementation parity. Module/parameter names match the reference state dicts
+// 1:1 (after the converter strips the actor's "net." prefix):
 //   actor:  earl.*  output.mean.weight output.mean.bias output.log_std
 //   critic: earl.*  output.weight output.bias
 // Forward() takes the FLAT per-player obs (q || kv || m, obsSize wide) and rebuilds the
 // (q, kv, m) tuple internally, so the buffer/trajectory plumbing stays flat.
 
 namespace RLGPC {
-	// Python ContinuousControlsHead: (B,1,256) -> (B,1,2*nControls) = [mean, log_std].
+	// Continuous head: (B,1,256) -> (B,1,2*nControls) = [mean, log_std].
 	class ContinuousControlsHeadImpl : public torch::nn::Module {
 	public:
 		torch::nn::Linear mean{nullptr};

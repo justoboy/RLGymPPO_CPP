@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """parity_gen.py — Phase 2 parity gate: generate seeded obs batches + Python action means.
 
-Builds the SAME continuous Gaussian policy the BC checkpoint trained (reference.agent's
+Builds the SAME continuous Gaussian policy the BC checkpoint trained (the reference agent's
 EARLPerceiver + ContinuousControlsHead), loads the checkpoint's actor_state_dict into it,
 then for N seeded FLAT obs vectors (q||kv||m, obsSize wide) computes the deterministic
 policy output (the raw 9 control means, pre-decode).
@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from torch import nn
 
-# --- Mirror of reference.agent (kept local so the gate has zero reference import deps) ---
+# --- Mirror of the reference agent (kept local so the gate has zero reference-import deps) ---
 N_CONTROLS = 9
 
 
@@ -61,7 +61,7 @@ class PerceiverNet(nn.Module):
 
 
 class FSPNet(nn.Module):
-    """Mirror of reference.fsp.FSPNet. Holds the SAME earl trunk instance the actor uses, plus a
+    """Mirror of the reference FSPNet. Holds the SAME earl trunk instance the actor uses, plus a
     Linear(256, out_features) head. forward((q,kv,m)) -> (B, out_features) = head(relu(earl))[:,0,:]."""
 
     def __init__(self, earl, out_features, chunk_size=2048):

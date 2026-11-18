@@ -2,14 +2,14 @@
 
 #include <private/RLGymPPO_CPP/FrameworkTorch.h>
 
-// CONTINUOUS arm: exact port of reference.agent.ContinuousPolicy:
+// CONTINUOUS arm (reference-implementation parity):
 //   mean, log_std = head_out.split(nControls); log_std.clamp(-5, 2)
 //   std = exp(log_std).clamp(1e-4, 10)
 //   sample: action = mean + std * eps
 //   log_prob = Normal(action; mean, std).log_prob summed over channels (Independent, dim=-1)
 //   entropy  = Normal.entropy summed over channels; Normal.entropy = log_std + 0.5*(1+log(2*pi))
 //
-// DISCRETE arm: exact port of reference.agent.CategoricalControlsPolicy:
+// DISCRETE arm (reference-implementation parity):
 //   logits (B, nControls, maxBins); pad slots beyond nBins[c] masked to -inf; probs=softmax,
 //   logProbs=log_softmax. sample -> per-channel categorical bin index; deterministic -> argmax.
 //   log_prob = sum_c logProbs[c, idx_c]; entropy = sum_c -(p_c * logp_c).

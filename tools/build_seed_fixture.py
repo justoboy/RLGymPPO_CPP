@@ -26,7 +26,7 @@ N_CONTROLS = 9
 N_DIMS = 256
 N_HEADS = 8
 N_LAYERS = 1
-# Superset layout constants (mirror reference/constants.py; see convert_bc_checkpoint.spec_to_layout).
+# Superset layout constants (mirror the reference constants; see convert_bc_checkpoint.spec_to_layout).
 _WORLD_FEATURES = 25
 _N_PROFILE_FEATURES = 14
 _QUERY_TAIL = 169

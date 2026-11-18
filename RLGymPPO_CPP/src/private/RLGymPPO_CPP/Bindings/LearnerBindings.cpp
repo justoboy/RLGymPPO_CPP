@@ -111,6 +111,7 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("saveFolderAddUnixTimestamp", &LearnerConfig::saveFolderAddUnixTimestamp)
 		.def_readwrite("timestepsPerSave", &LearnerConfig::timestepsPerSave)
 		.def_readwrite("deviceType", &LearnerConfig::deviceType)
+		.def_readwrite("useTF32", &LearnerConfig::useTF32)
 		.def_readwrite("randomSeed", &LearnerConfig::randomSeed)
 		.def_readwrite("checkpointsToKeep", &LearnerConfig::checkpointsToKeep)
 		// Collision-mesh folder (absolute path recommended when embedded in a host with unknown CWD).
@@ -156,11 +157,16 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def("to_string", &Report::ToString);
 
 	// The single-policy learner handle. Methods are the generic verbs a Python driver interleaves.
+	//
+	// GIL: run_iteration()/learn() drive libtorch autograd (backward()), which MUST NOT run while the
+	// GIL is held (PyTorch's python autograd engine aborts otherwise). pybind holds the GIL by default,
+	// so these two release it for the duration of the call and re-acquire it for the return conversion.
+	// The other verbs touch no autograd and keep the GIL.
 	py::class_<Learner>(m, "Learner")
 		.def("start_agents", &Learner::StartAgents)
 		.def("stop_agents", &Learner::StopAgents)
-		.def("run_iteration", &Learner::RunIteration)
-		.def("learn", &Learner::Learn)
+		.def("run_iteration", &Learner::RunIteration, py::call_guard<py::gil_scoped_release>())
+		.def("learn", &Learner::Learn, py::call_guard<py::gil_scoped_release>())
 		.def("save", &Learner::Save)
 		.def("load", &Learner::Load)
 		.def("update_learning_rates", &Learner::UpdateLearningRates)

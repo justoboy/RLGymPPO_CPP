@@ -85,12 +85,19 @@ void _RunFunc(ThreadAgent* ta) {
 		if (render)
 			stepTimer.Reset();
 
-		// Don't run if we reached our step limit
-		while (ta->stepsCollected > ta->maxCollect)
+		// Don't run if we reached our step limit. Both inner waits MUST also check shouldRun: once an
+		// agent exceeds its per-agent budget the first condition is permanently true, so without the
+		// shouldRun guard the worker parks there forever and Stop() (which busy-spins on isRunning)
+		// never returns. This was the g32/t2 deadlock (0% CPU/GPU hang).
+		while (ta->shouldRun && ta->stepsCollected > ta->maxCollect)
 			THREAD_WAIT();
+		if (!ta->shouldRun)
+			break;
 
-		while (mgr->disableCollection)
+		while (ta->shouldRun && mgr->disableCollection)
 			THREAD_WAIT();
+		if (!ta->shouldRun)
+			break;
 
 		// Infer actions for all our agents in all our games.
 		Timer policyInferTimer = {};
