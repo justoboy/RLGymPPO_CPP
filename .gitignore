@@ -62,6 +62,10 @@ libtorch
 # Private design docs (kept on disk, never committed/pushed)
 docs_private/
 
+# Local agent rules/instructions (read from disk, never committed/pushed)
+.kilocode/
+.kilo/
+
 # Generated build logs
 build_cfg.log
 build_out.log
@@ -74,3 +78,7 @@ parity_weights/
 tools/bench_*
 tools/sweep_*
 tools/speed_bench.py
+
+# Python bytecode caches
+__pycache__/
+*.pyc
