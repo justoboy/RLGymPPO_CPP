@@ -79,6 +79,11 @@ add_executable(obsbench "${PROJECT_SOURCE_DIR}/../tools/obsbench.cpp")
 target_link_libraries(obsbench PUBLIC "${TORCH_LIBRARIES}")
 set_target_properties(obsbench PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
+# P4 active-set owner-map parity gate: pure-C++ mirror of the per-slot owner-map transform that
+# RLGSC::TeamConfigMutator stamps into GameState::slotOwners (no torch/sim needed).
+add_executable(OwnerGate "${PROJECT_SOURCE_DIR}/../tools/owner_main.cpp")
+set_target_properties(OwnerGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+
 # Include JSON
 #target_include_directories(RLGymPPO_CPP PRIVATE "${PROJECT_SOURCE_DIR}/libsrc/json")
 
