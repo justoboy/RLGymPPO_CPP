@@ -25,7 +25,7 @@ from earl_pytorch import EARLPerceiver
 N_CONTROLS = 9
 N_DIMS = 256
 N_HEADS = 8
-N_LAYERS = 1
+N_LAYERS = 4
 # Superset layout constants (mirror the reference constants; see convert_bc_checkpoint.spec_to_layout).
 _WORLD_FEATURES = 25
 _N_PROFILE_FEATURES = 14
@@ -92,12 +92,14 @@ def main():
 
     torch.manual_seed(1337)
 
-    actor_earl = EARLPerceiver(N_DIMS, N_HEADS, N_LAYERS, 1,
+    # EARLPerceiver signature is (n_dims, n_layers, n_heads, n_preprocess_layers) — pass layers THEN
+    # heads so the synthetic checkpoint matches the real agent's EARLPerceiver(256, 4, 8, 1).
+    actor_earl = EARLPerceiver(N_DIMS, N_LAYERS, N_HEADS, 1,
                               query_features=query_features, key_value_features=kv_features)
     actor = PerceiverNet(actor_earl, ContinuousControlsHead())
     actor_state = {("net." + k): v for k, v in actor.state_dict().items()}
 
-    critic_earl = EARLPerceiver(N_DIMS, N_HEADS, N_LAYERS, 1,
+    critic_earl = EARLPerceiver(N_DIMS, N_LAYERS, N_HEADS, 1,
                               query_features=query_features, key_value_features=kv_features)
     critic = PerceiverNet(critic_earl, nn.Linear(N_DIMS, 1))
     critic_state = dict(critic.state_dict())

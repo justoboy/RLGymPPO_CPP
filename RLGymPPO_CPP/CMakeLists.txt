@@ -57,6 +57,18 @@ target_include_directories(ModelParityGate PRIVATE "src/public" "src/private")
 target_link_libraries(ModelParityGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
 set_target_properties(ModelParityGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
+# League gradient-direction parity gate (P3): loads the BC actor, runs the exact PPO policy-loss
+# backward, and dumps per-parameter gradients for the Python side to diff. Named GradGate.
+add_executable(GradGate
+	"${PROJECT_SOURCE_DIR}/../tools/grad_main.cpp"
+	"src/private/RLGymPPO_CPP/Model/EARLPerceiver.cpp"
+	"src/private/RLGymPPO_CPP/Model/PerceiverNet.cpp"
+	"src/private/RLGymPPO_CPP/Model/FSPNet.cpp"
+	"src/private/RLGymPPO_CPP/PPO/GaussianPolicy.cpp")
+target_include_directories(GradGate PRIVATE "src/public" "src/private")
+target_link_libraries(GradGate PUBLIC "${TORCH_LIBRARIES}" RLGymSim_CPP)
+set_target_properties(GradGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+
 # Isolation test: does the live Gym env Reset() work in this environment (no torch/pybind/Learner)?
 add_executable(isolation_env "${PROJECT_SOURCE_DIR}/../tools/isolation_env.cpp")
 target_link_libraries(isolation_env PUBLIC RLGymSim_CPP)
