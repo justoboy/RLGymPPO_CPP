@@ -27,7 +27,7 @@ using namespace RLGSC;
 PYBIND11_MODULE(rlgym_learner, m) {
 	m.doc() = "C++ PPO learner (EARL Perceiver) exposed to Python. A single handle may own one or "
 		"more members (policies); run_iteration() returns one metric dict per member. Multi-member "
-		"behavior is composed in Python by configuring memberPerceiver/slotOwners.";
+		"behavior is composed in Python by configuring memberPerceiver + the env's per-episode team config.";
 
 	py::enum_<LearnerDeviceType>(m, "LearnerDeviceType")
 		.value("AUTO", LearnerDeviceType::AUTO)
@@ -123,10 +123,9 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("metricsGroupName", &LearnerConfig::metricsGroupName)
 		.def_readwrite("metricsRunName", &LearnerConfig::metricsRunName)
 		.def_readwrite("skillTrackerConfig", &LearnerConfig::skillTrackerConfig)
-		// Multi-member league config. memberPerceiver: one PerceiverConfig per member (owner id);
-		// empty => single member. slotOwners: per-slot owner id (same for every game); empty => all 0.
-		.def_readwrite("memberPerceiver", &LearnerConfig::memberPerceiver)
-		.def_readwrite("slotOwners", &LearnerConfig::slotOwners);
+		// Multi-member config: one PerceiverConfig per member (owner id); empty => single member. The
+		// per-episode slot->owner routing comes from the env's active-set sampler (see EnvConfig).
+		.def_readwrite("memberPerceiver", &LearnerConfig::memberPerceiver);
 
 	py::class_<EnvConfig>(m, "EnvConfig")
 		.def(py::init<>())
@@ -145,7 +144,14 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("kvFeatures", &EnvConfig::kvFeatures)
 		.def_readwrite("nTokens", &EnvConfig::nTokens)
 		.def_readwrite("nControls", &EnvConfig::nControls)
-		.def_readwrite("entityFeatures", &EnvConfig::entityFeatures);
+		.def_readwrite("entityFeatures", &EnvConfig::entityFeatures)
+		// Per-episode active-set / matchup sampler. teamConfigs empty => plain self-play (every slot ->
+		// member 0). Non-empty => per-episode (n_blue,n_orange) sampling + per-slot owner stamping.
+		.def_readwrite("teamConfigs", &EnvConfig::teamConfigs)
+		.def_readwrite("teamWeights", &EnvConfig::teamWeights)
+		.def_readwrite("memberCount", &EnvConfig::memberCount)
+		.def_readwrite("siblingFraction", &EnvConfig::siblingFraction)
+		.def_readwrite("randomSeed", &EnvConfig::randomSeed);
 
 	// Report is a metric map; expose it as a plain dict-like with a few conveniences.
 	py::class_<Report>(m, "Report")

@@ -10,10 +10,6 @@ void RLGPC::ThreadAgentManager::CreateAgents(EnvCreateFn func, int amount, int g
 		}
 		auto agent = new ThreadAgent(this, numGames, maxCollect / amount, func, i);
 		agents.push_back(agent);
-
-		// playerAmount (slots per game) is fixed across games; learn it from the first game we build.
-		if (playerAmount == 0)
-			playerAmount = (int)agent->gameInsts[0]->match->playerAmount;
 	}
 }
 
@@ -45,32 +41,25 @@ std::vector<RLGPC::GameTrajectory> RLGPC::ThreadAgentManager::CollectTimesteps(u
 	std::vector<size_t> totals(policies.size(), 0);
 
 	try {
-		// Combine each owner's per-slot trajectories into that owner's long trajectory.
+		// Each agent has already routed every COMPLETED episode's per-slot trajectory into its per-owner
+		// ownerTrajectories (inside _RunFunc at each done). Flush the still-in-flight (cut-short) episodes
+		// too, then concatenate each owner's accumulated trajectory into the result for that owner.
 		for (auto agent : agents) {
 			agent->trajMutex.lock();
-			for (int i = 0; i < (int)agent->trajectories.size(); i++) {
-				auto& trajSet = agent->trajectories[i];
-				for (int j = 0; j < (int)trajSet.size(); j++) {
-					auto& traj = trajSet[j];
-					if (traj.size > 0) {
-						// If the last timestep is not a done, mark it as truncated
-						// The GAE needs to know when the environment state stops being continuous
-						// This happens either because the environment reset (i.e. goal scored), called "done",
-						//	or the data got cut short, called "truncated"
-						traj.data.truncateds[traj.size - 1] = (traj.data.dones[traj.size - 1].item<float>() == 0);
+			agent->FlushInFlightLocked();
 
-						int owner = singlePolicy ? 0 : slotOwners[j];
-						if (results[owner].size == 0)
-							results[owner] = traj;
-						else
-							results[owner].Append(traj);
-						totals[owner] += traj.size;
-						traj.Clear();
-					} else {
-						// Kinda lame but does happen
-					}
+			for (int g = 0; g < (int)agent->ownerTrajectories.size(); g++) {
+				auto& traj = agent->ownerTrajectories[g];
+				if (traj.size > 0) {
+					if (results[g].size == 0)
+						results[g] = traj;
+					else
+						results[g].Append(traj);
+					totals[g] += traj.size;
+					traj.Clear();
 				}
 			}
+
 			agent->stepsCollected = 0;
 			agent->trajMutex.unlock();
 		}

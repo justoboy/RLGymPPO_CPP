@@ -71,25 +71,29 @@ def read_spec(weig_folder):
         return json.load(f)
 
 
-def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_size, spawn_opponents=True,
-                     spawn_curriculum=False, spawn_ratio=1.0, spawn_prob=0.5, mutator_seed=0):
+def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs, team_weights,
+                     member_count, sibling_fraction, random_seed):
     """EnvConfig at the superset (widest) member layout. The env always emits the superset flat obs;
-    the C++ threading layer column-projects each slot down to its owner's own width."""
+    the C++ threading layer column-projects each slot down to its owner's own width. Routing is
+    PER-EPISODE: the env's TeamConfigMutator samples a (n_blue,n_orange) config each reset and stamps
+    the per-slot owner map into GameState.slotOwners (replaces the old frozen cfg.slotOwners)."""
     sup = max(member_layouts, key=lambda m: m["entity_features"])
     ec = L.EnvConfig()
     ec.tickSkip = tick_skip
     ec.gameMode = game_mode
-    ec.teamSize = team_size
-    ec.spawnOpponents = spawn_opponents
-    ec.spawnCurriculumEnabled = bool(spawn_curriculum)
-    ec.spawnCurriculumRatio = float(spawn_ratio)
-    ec.spawnCurriculumProb = float(spawn_prob)
-    ec.mutatorSeed = int(mutator_seed)
+    ec.teamSize = 1  # legacy field; the active set now comes from teamConfigs sampling per episode
+    ec.spawnOpponents = True
     ec.entityFeatures = int(sup["entity_features"])
     ec.queryFeatures = int(sup["query_features"])
     ec.kvFeatures = int(sup["kv_features"])
     ec.nTokens = int(sup["n_tokens"])
     ec.nControls = int(sup["n_controls"])
+    # Per-episode active-set / matchup sampler.
+    ec.teamConfigs = [tuple(c) for c in team_configs]
+    ec.teamWeights = [float(w) for w in team_weights]
+    ec.memberCount = int(member_count)
+    ec.siblingFraction = float(sibling_fraction)
+    ec.randomSeed = int(random_seed)
     return ec
 
 
@@ -110,12 +114,13 @@ def build_perceiver(L, layout, *, n_dims=256, n_heads=8, n_layers=1):
 class LeagueDriver:
     """Wraps one fixed-topology multi-member learner + its BC seeding + epoch stepping."""
 
-    def __init__(self, L, *, bot_checkpoints, slot_owners, team_size, game_mode, seed,
+    def __init__(self, L, *, bot_checkpoints, team_configs, team_weights, member_count,
+                 sibling_fraction, game_mode, seed,
                  save_dir, load_dir, num_threads=1, games_per_thread=1,
                  timesteps_per_iteration=64, exp_buffer_size=4096,
                  batch_size=32, mini_batch_size=16, epochs=1,
                  actor_lr=1e-4, critic_lr=1e-4, ent_coef=0.01, clip_range=0.2, lambda_fsp=0.0,
-                 standardize_returns=False, device="CPU", spawn_curriculum=False):
+                 standardize_returns=False, device="CPU"):
         self.L = L
         self.learner = None
         self.member_weig = []
@@ -131,9 +136,11 @@ class LeagueDriver:
             self.member_weig.append(weig)
             print(f"[driver] member {i}: layout {layout}")
 
-        # 2. EnvConfig at the superset layout + one PerceiverConfig per member.
+        # 2. EnvConfig at the superset layout + one PerceiverConfig per member. Routing is per-episode.
         ec = build_env_config(L, member_layouts, tick_skip=8, game_mode=game_mode,
-                              team_size=team_size, spawn_curriculum=spawn_curriculum)
+                              team_configs=team_configs, team_weights=team_weights,
+                              member_count=member_count, sibling_fraction=sibling_fraction,
+                              random_seed=seed)
         cfg = L.LearnerConfig()
         cfg.deviceType = getattr(L.LearnerDeviceType, device)
         cfg.collisionMeshesFolder = os.environ.get(
@@ -156,7 +163,6 @@ class LeagueDriver:
         cfg.ppo.clipRange = clip_range
         cfg.ppo.lambdaFSP = lambda_fsp
         cfg.memberPerceiver = [build_perceiver(L, m) for m in member_layouts]
-        cfg.slotOwners = list(slot_owners)
 
         # 3. Create the learner, then seed every member from its BC WEIG folder.
         learner = L.create_learner(ec, cfg)
@@ -202,15 +208,20 @@ def main():
 
     bots = raw["bots"]  # list of {name, checkpoint} dicts
     bot_checkpoints = [b["checkpoint"] for b in bots]
-    slot_owners = [int(x) for x in raw["slot_owners"]]
-    team_size = int(raw.get("team_size", 1))
+    # Per-episode team-config pool. Each entry is [n_blue, n_orange]; weights weight the draw.
+    team_configs = [tuple(int(x) for x in c) for c in raw["team_configs"]]
+    team_weights = [float(x) for x in raw["team_weights"]]
+    member_count = int(raw.get("member_count", len(bot_checkpoints)))
+    sibling_fraction = float(raw.get("sibling_fraction", 0.0))
     game_mode = getattr(L.GameMode, str(raw.get("game_mode", "SOCCAR")))
 
     driver = LeagueDriver(
         L,
         bot_checkpoints=bot_checkpoints,
-        slot_owners=slot_owners,
-        team_size=team_size,
+        team_configs=team_configs,
+        team_weights=team_weights,
+        member_count=member_count,
+        sibling_fraction=sibling_fraction,
         game_mode=game_mode,
         seed=int(raw.get("seed", 123)),
         save_dir=raw["save_dir"],
@@ -227,7 +238,6 @@ def main():
         lambda_fsp=float(raw.get("lambda_fsp", 0.0)),
         standardize_returns=bool(raw.get("standardize_returns", False)),
         device=str(raw.get("device", "CPU")),
-        spawn_curriculum=bool(raw.get("spawn_curriculum", False)),
     )
 
     driver.start()

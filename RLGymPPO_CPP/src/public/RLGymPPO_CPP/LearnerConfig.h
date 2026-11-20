@@ -48,11 +48,11 @@ namespace RLGPC {
 		PPOLearnerConfig ppo = {};
 
 		// Multi-member league config. When memberPerceiver is non-empty, the learner builds one PPO
-		// learner per member (each with its own Perceiver obs width) and routes each game slot to its
-		// owner via slotOwners. The shared PPO hyperparams come from `ppo`; only `perceiver` varies per
-		// member. Empty memberPerceiver => single-member (uses ppo.perceiver, every slot owned by member 0).
+		// learner per member (each with its own Perceiver obs width). The shared PPO hyperparams come from
+		// `ppo`; only `perceiver` varies per member. Empty memberPerceiver => single-member (uses
+		// ppo.perceiver). Which member controls each slot is decided PER EPISODE by the active-set setter
+		// (see EnvConfig), not by a frozen owner map.
 		std::vector<PerceiverConfig> memberPerceiver = {};
-		std::vector<int> slotOwners = {};
 
 		float gaeLambda = 0.95f;
 		float gaeGamma = 0.99f;

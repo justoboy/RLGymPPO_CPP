@@ -23,9 +23,6 @@ namespace RLGPC {
 		std::vector<class ExperienceBuffer*> buffers;
 		std::vector<WelfordRunningStat> returnStats;
 
-		// slotOwners[j] = member id owning slot j (same for every game). Empty in single-member mode.
-		std::vector<int> slotOwners;
-
 		class ThreadAgentManager* agentMgr;
 		EnvCreateFn envCreateFn;
 		MetricSender* metricSender;

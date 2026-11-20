@@ -39,6 +39,17 @@ namespace RLGPC {
 		int teamSize = 1;
 		bool spawnOpponents = true;
 
+		// Per-episode active-set / matchup sampler (P4). When teamConfigs is non-empty, the env uses the
+		// TeamConfigMutator: on every reset it samples one (n_blue, n_orange) from the weighted pool,
+		// clears the arena, respawns exactly that active set, runs a native random kickoff, and stamps the
+		// per-episode slot->owner map (which member controls each slot) into GameState::slotOwners. When
+		// empty, the env uses the plain random-kickoff setter (single-bot self-play, every slot -> member 0).
+		std::vector<std::pair<int, int>> teamConfigs = {};
+		std::vector<float> teamWeights = {};
+		int memberCount = 1;
+		float siblingFraction = 0.0f;
+		int randomSeed = 123; // per-env sampler seed (each game's sampler draws its own episodes)
+
 		// Fixed arena mode for this env (the league builds one env per mode). Maps to GameMode.
 		// The arena's mode is fixed at Arena::Create() (Gym construction) time, so mode selection is
 		// per-env, not per-episode; the single StateSetter is just the random-kickoff resetter.

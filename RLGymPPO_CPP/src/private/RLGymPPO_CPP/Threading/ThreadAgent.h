@@ -36,7 +36,18 @@ namespace RLGPC {
 		};
 		Times times = {}; // TODO: Convert to use Report instead
 
+		// Per-slot trajectory buffers, indexed [game][slot]. The active set (and thus the number of
+		// live slots) can vary per episode, so each game's slot vector is sized to the superset frame
+		// width (MAX_SLOTS); only slots below the current episode's active count are appended to. When a
+		// game's episode ends (done), that episode's per-slot buffers are flushed (end-to-end) into
+		// ownerTrajectories[owner] and cleared, so a slot's data is always routed to the member that
+		// owned it DURING that episode (the owner map is constant within an episode).
+		static constexpr int MAX_SLOTS = 8; // superset car-slot count (2 * MAX_TEAM)
 		std::vector<std::vector<GameTrajectory>> trajectories = {};
+
+		// Accumulated, already-owner-routed experience for this agent, one buffer per member (owner id).
+		std::vector<GameTrajectory> ownerTrajectories = {};
+
 		std::atomic<uint64_t> stepsCollected = 0;
 		uint64_t maxCollect;
 		
@@ -52,6 +63,12 @@ namespace RLGPC {
 
 		void Start();
 		void Stop();
+
+		// Flush the per-slot trajectory buffers of every game that is currently mid-episode (i.e. the
+		// episode that was cut short when collection stopped) into ownerTrajectories, marking each cut
+		// episode's last step truncated. Caller MUST hold trajMutex. Completes the owner-routing that
+		// _RunFunc started for already-finished episodes.
+		void FlushInFlightLocked();
 
 		~ThreadAgent() {
 			for (auto g : gameInsts)

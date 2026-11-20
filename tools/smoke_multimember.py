@@ -27,14 +27,15 @@ def make_perceiver(ef):
     pc.nHeads = 8
     pc.nLayers = 1
     pc.nControls = 9
-    # Native TemporalObsBuilder layout (maxPlayers=4 -> but teamSize=1 so nBlue/nOrange=1):
-    # the builder's native widths are query=59, kv=30, tokens=559 (see examplemain.cpp comment).
-    # For the smoke test both members use the same (native) width; the multi-member plumbing is
-    # exercised by having 2 policies + 2 buffers + slotOwners routing, not by width divergence.
-    pc.entityFeatures = ef
-    pc.queryFeatures = 59
-    pc.kvFeatures = 30
-    pc.nTokens = 559
+    # The TemporalObsBuilder is hardcoded to the canonical superset layout (P5): query=208,
+    # kv=69, tokens=151, entity=39 (profile-on). The perceiver MUST match the obs builder's emitted
+    # widths exactly, or the policy input layer is sized wrong and reads out of bounds. Both members
+    # share the superset width; the multi-member plumbing is exercised by 2 policies + 2 buffers +
+    # per-episode slotOwners routing, not by width divergence.
+    pc.entityFeatures = ef  # 39 (profile-on) for both members
+    pc.queryFeatures = 208
+    pc.kvFeatures = 69
+    pc.nTokens = 151
     return pc
 
 
@@ -46,7 +47,20 @@ def main():
     ec.spawnOpponents = True
     ec.gameMode = L.GameMode.SOCCAR
     ec.nControls = 9
-    ec.entityFeatures = 30  # native builder width
+    ec.entityFeatures = 39  # superset profile-on builder width
+    # EnvFactory::CreateLearner copies these onto the perceiver (overriding make_perceiver's widths),
+    # so they MUST match the TemporalObsBuilder's hardcoded superset layout.
+    ec.queryFeatures = 208
+    ec.kvFeatures = 69
+    ec.nTokens = 151
+    # Per-episode active-set routing: 2 members, every episode a sibling 1v1 (slot 0 -> member 0,
+    # slot 1 -> member 1). The env's TeamConfigMutator stamps GameState.slotOwners per reset; the
+    # learner routes each slot's trajectory to its owner. (Replaces the old frozen cfg.slotOwners.)
+    ec.memberCount = 2
+    ec.siblingFraction = 1.0  # every episode is a sibling 1v1: slot0->member0, slot1->member1
+    ec.teamConfigs = [(1, 1)]  # single 1v1 config -> 2 active slots, both owned per-episode
+    ec.teamWeights = [1.0]
+    ec.randomSeed = 123
 
     cfg = L.LearnerConfig()
     cfg.deviceType = L.LearnerDeviceType.CPU  # bisect: is CUDA model construction the crash?
@@ -65,17 +79,16 @@ def main():
     cfg.ppo.epochs = 1
     cfg.ppo.lambdaFSP = 0.0  # smoke test: no FSP head
 
-    # Two members (same native width) to exercise the multi-member plumbing.
-    m0 = make_perceiver(30)
-    m1 = make_perceiver(30)
+    # Two members (same superset width) to exercise multi-member routing.
+    m0 = make_perceiver(39)
+    m1 = make_perceiver(39)
     cfg.memberPerceiver = [m0, m1]
-    # 2 slots: slot 0 -> member 0 (blue), slot 1 -> member 1 (orange).
-    cfg.slotOwners = [0, 1]
 
     learner = L.create_learner(ec, cfg)
     print("obs_size:", learner.obs_size)
     print("action_amount:", learner.action_amount)
-    assert learner.obs_size == 59 + 559 * 30 + 559, f"unexpected obs_size {learner.obs_size}"
+    # Superset layout: query(208) + tokens(151)*kv(69) + mask(151) = 10778.
+    assert learner.obs_size == 208 + 151 * 69 + 151, f"unexpected obs_size {learner.obs_size}"
 
     learner.start_agents()
     reports = learner.run_iteration()

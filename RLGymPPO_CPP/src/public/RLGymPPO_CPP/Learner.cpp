@@ -169,17 +169,16 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 		returnStats.push_back(WelfordRunningStat(1));
 	}
 
-	// slotOwners: which member owns each slot. Empty => single member (every slot owned by member 0).
-	slotOwners = config.slotOwners;
-
-	// Hand the manager the per-member policies + owner map. Its constructor derives the superset layout
-	// and per-owner column gathers from the policies (single-policy when there's exactly one).
+	// Hand the manager the per-member policies. Per-episode slot->owner routing lives in each GameInst
+	// (read from GameState::slotOwners stamped by the active-set setter), not in a frozen owner map.
+	// The manager's constructor derives the superset layout + per-owner column gathers from the policies
+	// (single-policy when there's exactly one).
 	RG_LOG("\tCreating agent manager...");
 	std::vector<GaussianPolicy*> memberPolicies;
 	for (auto* ppo : ppos)
 		memberPolicies.push_back(ppo->policy);
 	agentMgr = new ThreadAgentManager(
-		memberPolicies, slotOwners,
+		memberPolicies,
 		config.standardizeOBS, config.deterministic, device.is_cpu() && torch::get_num_threads() > 1,
 		(uint64_t)(config.timestepsPerIteration * 1.5f),
 		device

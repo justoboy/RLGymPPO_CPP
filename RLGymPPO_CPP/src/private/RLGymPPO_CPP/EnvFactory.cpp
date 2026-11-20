@@ -9,6 +9,7 @@
 #include <RLGymSim_CPP/Utils/TerminalConditions/GoalScoreCondition.h>
 #include <RLGymSim_CPP/Utils/OBSBuilders/TemporalObsBuilder.h>
 #include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
+#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
 #include <RLGymSim_CPP/Utils/ActionParsers/ContinuousActionParser.h>
 
 using namespace RLGSC;
@@ -16,9 +17,15 @@ using namespace RLGSC;
 namespace RLGPC {
 
 // The arena's game mode is fixed at Arena::Create() time (Gym construction), so the league builds one
-// env per mode rather than sampling per-episode. The single StateSetter is the random-kickoff resetter.
+// env per mode rather than sampling per-episode. The StateSetter is either the plain random-kickoff
+// resetter (single-bot self-play) or the per-episode active-set/matchup sampler (league mode).
 static EnvCreateFn MakeEnvCreateFn(const EnvConfig& ec) {
-	return [ec]() -> EnvCreateResult {
+	// A single shared counter (captured by shared_ptr so every copy of the lambda — one per ThreadAgent —
+	// advances the same counter) gives every game across every agent a distinct sampler seed, so games'
+	// matchup sampling stays independent instead of all drawing the same team-config sequence in lockstep.
+	auto gameCounter = std::make_shared<int>(0);
+	return [ec, gameCounter]() mutable -> EnvCreateResult {
+		int seed = ec.randomSeed + (*gameCounter)++;
 		auto rewards = new CombinedReward(
 			{
 				{ new FaceBallReward(), ec.faceBallWeight },
@@ -39,7 +46,15 @@ static EnvCreateFn MakeEnvCreateFn(const EnvConfig& ec) {
 		obs->tickSkip = ec.tickSkip;
 
 		auto actionParser = new ContinuousActionParser(ec.tickSkip);
-		auto stateSetter = new RandomState(true, true, true);
+
+		// League mode (teamConfigs set): per-episode active-set spawner + matchup sampler that stamps the
+		// per-slot owner map. Self-play (teamConfigs empty): random-kickoff setter that spawns teamSize
+		// (+opponents) cars into the fresh empty arena; every slot is owned by member 0 (self-play).
+		StateSetter* stateSetter;
+		if (ec.teamConfigs.empty())
+			stateSetter = new RandomState(true, true, true, ec.teamSize, ec.spawnOpponents, CAR_CONFIG_OCTANE);
+		else
+			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed);
 
 		Match* match = new Match(
 			rewards,

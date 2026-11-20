@@ -24,6 +24,12 @@ namespace RLGPC {
 
 		FList2 curObs;
 
+		// Owner id per currently-active slot (blue-first order, same order as curObs rows /
+		// gym->prevState.players). Re-read from gym->prevState.slotOwners on every episode reset, so the
+		// learner routes each slot's trajectory to the member that owned it DURING that episode. For a
+		// single-member self-play run this is all zeros (every slot owned by member 0).
+		std::vector<int> curOwners;
+
 		uint64_t totalSteps;
 
 		float curEpRew = 0;

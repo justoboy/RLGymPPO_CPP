@@ -36,6 +36,33 @@ static inline torch::Tensor ProjectRow(const torch::Tensor& fullRow, const torch
 	return fullRow.index_select(0, colG);
 }
 
+// Flush one game's per-slot trajectory buffers into the owner-routed accumulation buffers. For each slot
+// that has data, mark truncation on its last step (a step that ended without a goal is truncated, not
+// done) and append the whole per-slot trajectory end-to-end into ownerTrajs[owner]. `owners` is the owner
+// map that was active during the episode those steps came from (constant within an episode). Slots past
+// the active count have empty buffers and are skipped.
+static void FlushSlots(
+	std::vector<GameTrajectory>& perSlot, const std::vector<int>& owners,
+	std::vector<GameTrajectory>& ownerTrajs
+) {
+	for (int j = 0; j < (int)perSlot.size(); j++) {
+		auto& traj = perSlot[j];
+		if (traj.size == 0)
+			continue;
+
+		// If the last timestep is not a done, mark it as truncated (the state stopped being continuous
+		// because the data got cut short rather than because a goal was scored).
+		traj.data.truncateds[traj.size - 1] = (traj.data.dones[traj.size - 1].item<float>() == 0);
+
+		int owner = owners[j];
+		if (ownerTrajs[owner].size == 0)
+			ownerTrajs[owner] = traj;
+		else
+			ownerTrajs[owner].Append(traj);
+		traj.Clear();
+	}
+}
+
 void _RunFunc(ThreadAgent* ta) {
 	RG_NOGRAD;
 	ta->isRunning = true;
@@ -55,7 +82,7 @@ void _RunFunc(ThreadAgent* ta) {
 	bool blockConcurrentInfer = mgr->blockConcurrentInfer;
 	Timer stepTimer = {};
 
-	// Start games
+	// Start games (this also populates each game's curObs + curOwners for its first episode).
 	for (auto game : games)
 		game->Start();
 
@@ -67,18 +94,7 @@ void _RunFunc(ThreadAgent* ta) {
 	auto& policies = mgr->policies;
 	auto& colIdx = mgr->colIdx;
 	bool singlePolicy = mgr->singlePolicy;
-
-	// Per-owner flat row index tensors (constant across steps). Built once. In single-policy mode
-	// owner 0 owns every row (identity), so the gather/scatter is a no-op.
-	std::vector<torch::Tensor> rowIdxT;
-	if (!singlePolicy) {
-		for (int g = 0; g < (int)policies.size(); g++) {
-			auto rows = mgr->BuildRowIdx(g, numGames);
-			rowIdxT.push_back(
-				torch::from_blob(rows.data(), { (int64_t)rows.size() }, torch::TensorOptions().dtype(torch::kLong)).clone()
-			);
-		}
-	}
+	int numOwners = (int)policies.size();
 
 	while (ta->shouldRun) {
 
@@ -98,6 +114,17 @@ void _RunFunc(ThreadAgent* ta) {
 			THREAD_WAIT();
 		if (!ta->shouldRun)
 			break;
+
+		// Snapshot the owner map active during THIS step (the episode currently running). The active set
+		// and owners can change at the next reset, so we freeze them for routing this step's data.
+		std::vector<std::vector<int>> prevOwners(numGames);
+		std::vector<int64_t> flatOwners;
+		flatOwners.reserve(curObsTensor.size(0));
+		for (int i = 0; i < numGames; i++) {
+			prevOwners[i] = games[i]->curOwners;
+			for (int o : prevOwners[i])
+				flatOwners.push_back(o);
+		}
 
 		// Infer actions for all our agents in all our games.
 		Timer policyInferTimer = {};
@@ -123,14 +150,22 @@ void _RunFunc(ThreadAgent* ta) {
 			} else {
 				// Multi-policy: per-owner column-project the superset obs to that owner's width, run that
 				// owner's policy on just its rows, and scatter the per-slot actions back into full tensors.
+				// The owner->row mapping is rebuilt every step because the active set varies per episode.
 				auto fullAction = torch::zeros({ (int64_t)totalPlayers, (int64_t)nControls }, torch::TensorOptions().dtype(at::kFloat));
 				auto fullLogProb = torch::zeros({ (int64_t)totalPlayers }, torch::TensorOptions().dtype(at::kFloat));
-				for (int g = 0; g < (int)policies.size(); g++) {
+				for (int g = 0; g < numOwners; g++) {
+					std::vector<int64_t> rowsG;
+					for (int r = 0; r < totalPlayers; r++)
+						if (flatOwners[r] == g)
+							rowsG.push_back(r);
+					if (rowsG.empty())
+						continue;
+					auto rowsT = torch::from_blob(rowsG.data(), { (int64_t)rowsG.size() }, torch::TensorOptions().dtype(torch::kLong)).clone();
 					torch::Tensor projG = colIdx[g].defined() ? curObsTensor.index_select(1, colIdx[g]) : curObsTensor;
-					torch::Tensor ownerObs = projG.index_select(0, rowIdxT[g]).to(device, true);
+					torch::Tensor ownerObs = projG.index_select(0, rowsT).to(device, true);
 					auto res = policies[g]->GetAction(ownerObs, deterministic);
-					fullAction.index_copy_(0, rowIdxT[g], res.action);
-					fullLogProb.index_copy_(0, rowIdxT[g], res.logProb);
+					fullAction.index_copy_(0, rowsT, res.action);
+					fullLogProb.index_copy_(0, rowsT, res.logProb);
 				}
 				actionResults.action = fullAction;
 				actionResults.logProb = fullLogProb;
@@ -151,7 +186,7 @@ void _RunFunc(ThreadAgent* ta) {
 		int actionsOffset = 0;
 		for (int i = 0; i < numGames; i++) {
 			auto game = games[i];
-			int numPlayers = game->match->playerAmount;
+			int numPlayers = (int)game->curObs.size(); // active count for this game this step
 
 			// Actions output has a dimension for each player, but not for each game
 			// So we will need to slice the section of it that is for this game
@@ -174,13 +209,13 @@ void _RunFunc(ThreadAgent* ta) {
 		torch::Tensor nextObsTensor = MakeGamesOBSTensor(games);
 
 		if (!render) {
-			// Steps complete, add all timestep data to our trajectories, for each game. The stored
+			// Steps complete, add all timestep data to our per-slot trajectories, for each game. The stored
 			// obs is the OWNER's projected width (identity in single-policy mode), so each member's
 			// actor/critic/fsp see the width they were trained on (mirrors rollout.py:stored_obs).
 			Timer trajAppendTimer = {};
 			ta->trajMutex.lock();
 			for (int i = 0, playerOffset = 0; i < numGames; i++) {
-				int numPlayers = games[i]->match->playerAmount;
+				int numPlayers = (int)prevOwners[i].size();
 
 				auto& stepResult = stepResults[i];
 
@@ -192,7 +227,7 @@ void _RunFunc(ThreadAgent* ta) {
 
 				for (int j = 0; j < numPlayers; j++) {
 					int row = playerOffset + j;
-					int owner = singlePolicy ? 0 : mgr->slotOwners[j];
+					int owner = prevOwners[i][j];
 					torch::Tensor storedCur = ProjectRow(curObsTensor[row], colIdx[owner]);
 					torch::Tensor storedNext = ProjectRow(nextObsTensor[row], colIdx[owner]);
 
@@ -216,6 +251,11 @@ void _RunFunc(ThreadAgent* ta) {
 
 				ta->stepsCollected += numPlayers;
 				playerOffset += numPlayers;
+
+				// Episode ended: route this episode's per-slot trajectories to their owners and clear, so
+				// the next episode (which may have a different active set / owners) starts from empty.
+				if (stepResult.done)
+					FlushSlots(ta->trajectories[i], prevOwners[i], ta->ownerTrajectories);
 			}
 			ta->trajMutex.unlock();
 			ta->times.trajAppendTime += trajAppendTimer.Elapsed();
@@ -256,11 +296,17 @@ void _RunFunc(ThreadAgent* ta) {
 RLGPC::ThreadAgent::ThreadAgent(void* manager, int numGames, uint64_t maxCollect, EnvCreateFn envCreateFn, int index)
 	: _manager(manager), numGames(numGames), maxCollect(maxCollect), index(index) {
 
+	int numOwners = (int)((ThreadAgentManager*)manager)->policies.size();
+	ownerTrajectories.resize(numOwners);
+
 	trajectories.resize(numGames);
+	for (int i = 0; i < numGames; i++)
+		trajectories[i].resize(MAX_SLOTS); // superset slot count; only active slots are appended to
+
+	// Build the game instances (does not start them; _RunFunc calls Start()).
 	for (int i = 0; i < numGames; i++) {
 		auto envCreateResult = envCreateFn();
 		gameInsts.push_back(new GameInst(envCreateResult.gym, envCreateResult.match));
-		trajectories[i].resize(envCreateResult.match->playerAmount);
 	}
 }
 
@@ -268,6 +314,15 @@ void RLGPC::ThreadAgent::Start() {
 	this->shouldRun = true;
 	this->thread = std::thread(_RunFunc, this);
 	this->thread.detach();
+}
+
+// Flush every game's currently-in-flight per-slot trajectory buffers into ownerTrajectories. Called by
+// CollectTimesteps after the workers have stopped, to capture the episode that was cut short when
+// collection ended (the already-finished episodes were flushed inside _RunFunc at each done). The owner
+// map for these in-flight steps is each game's current curOwners (constant during the in-flight episode).
+void RLGPC::ThreadAgent::FlushInFlightLocked() {
+	for (int i = 0; i < (int)gameInsts.size(); i++)
+		FlushSlots(trajectories[i], gameInsts[i]->curOwners, ownerTrajectories);
 }
 
 void RLGPC::ThreadAgent::Stop() {
