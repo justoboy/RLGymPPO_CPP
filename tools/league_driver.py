@@ -72,7 +72,9 @@ def read_spec(weig_folder):
 
 
 def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs, team_weights,
-                     member_count, sibling_fraction, random_seed):
+                     member_count, sibling_fraction, random_seed,
+                     member_reward_configs=None, spawn_curriculum_enabled=False,
+                     spawn_curriculum_ratio=1.0, spawn_curriculum_prob=0.5):
     """EnvConfig at the superset (widest) member layout. The env always emits the superset flat obs;
     the C++ threading layer column-projects each slot down to its owner's own width. Routing is
     PER-EPISODE: the env's TeamConfigMutator samples a (n_blue,n_orange) config each reset and stamps
@@ -94,6 +96,21 @@ def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs,
     ec.memberCount = int(member_count)
     ec.siblingFraction = float(sibling_fraction)
     ec.randomSeed = int(random_seed)
+    # Per-member reward program (term name -> weight + team_spirit/opponent_punish). Non-empty => the
+    # env uses the per-bot ComposedReward; empty => the generic CombinedReward fallback.
+    if member_reward_configs:
+        configs = []
+        for mrc in member_reward_configs:
+            cfg = L.MemberRewardConfig()
+            cfg.termWeights = [(str(k), float(v)) for k, v in mrc["term_weights"].items()]
+            cfg.teamSpirit = float(mrc["team_spirit"])
+            cfg.opponentPunish = float(mrc["opponent_punish"])
+            configs.append(cfg)
+        ec.memberRewardConfigs = configs
+    # Spawn curriculum (optional easy-spawn override on a fraction of episodes).
+    ec.spawnCurriculumEnabled = bool(spawn_curriculum_enabled)
+    ec.spawnCurriculumRatio = float(spawn_curriculum_ratio)
+    ec.spawnCurriculumProb = float(spawn_curriculum_prob)
     return ec
 
 
@@ -120,7 +137,9 @@ class LeagueDriver:
                  timesteps_per_iteration=64, exp_buffer_size=4096,
                  batch_size=32, mini_batch_size=16, epochs=1,
                  actor_lr=1e-4, critic_lr=1e-4, ent_coef=0.01, clip_range=0.2, lambda_fsp=0.0,
-                 standardize_returns=False, device="CPU"):
+                 standardize_returns=False, device="CPU",
+                 member_reward_configs=None, spawn_curriculum_enabled=False,
+                 spawn_curriculum_ratio=1.0, spawn_curriculum_prob=0.5):
         self.L = L
         self.learner = None
         self.member_weig = []
@@ -140,7 +159,10 @@ class LeagueDriver:
         ec = build_env_config(L, member_layouts, tick_skip=8, game_mode=game_mode,
                               team_configs=team_configs, team_weights=team_weights,
                               member_count=member_count, sibling_fraction=sibling_fraction,
-                              random_seed=seed)
+                              random_seed=seed, member_reward_configs=member_reward_configs,
+                              spawn_curriculum_enabled=spawn_curriculum_enabled,
+                              spawn_curriculum_ratio=spawn_curriculum_ratio,
+                              spawn_curriculum_prob=spawn_curriculum_prob)
         cfg = L.LearnerConfig()
         cfg.deviceType = getattr(L.LearnerDeviceType, device)
         cfg.collisionMeshesFolder = os.environ.get(
@@ -214,6 +236,8 @@ def main():
     member_count = int(raw.get("member_count", len(bot_checkpoints)))
     sibling_fraction = float(raw.get("sibling_fraction", 0.0))
     game_mode = getattr(L.GameMode, str(raw.get("game_mode", "SOCCAR")))
+    # Per-member reward program: list of {term_weights: {name: weight}, team_spirit, opponent_punish}.
+    member_reward_configs = raw.get("member_reward_configs") or None
 
     driver = LeagueDriver(
         L,
@@ -238,6 +262,10 @@ def main():
         lambda_fsp=float(raw.get("lambda_fsp", 0.0)),
         standardize_returns=bool(raw.get("standardize_returns", False)),
         device=str(raw.get("device", "CPU")),
+        member_reward_configs=member_reward_configs,
+        spawn_curriculum_enabled=bool(raw.get("spawn_curriculum_enabled", False)),
+        spawn_curriculum_ratio=float(raw.get("spawn_curriculum_ratio", 1.0)),
+        spawn_curriculum_prob=float(raw.get("spawn_curriculum_prob", 0.5)),
     )
 
     driver.start()
