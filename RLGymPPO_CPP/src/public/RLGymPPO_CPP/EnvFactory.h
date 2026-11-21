@@ -18,7 +18,19 @@
 #include <RLGymSim_CPP/Envs/Match.h>
 #include <RLGymSim_CPP/Gym.h>
 
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace RLGPC {
+
+	// One league member's reward "program": the set of terms that bot selects (name -> weight) plus its
+	// own team_spirit / opponent_punish scalars. Mirrors the per-slot tuple in the reference reward layer.
+	struct MemberRewardConfig {
+		std::vector<std::pair<std::string, float>> termWeights; // selected term name -> weight
+		float teamSpirit = 0.6f;
+		float opponentPunish = 1.0f;
+	};
 
 	// Everything the C++ env factory needs to build a Match+Gym, parameterized so Python configures it
 	// without touching the heavy sim types. Mirrors examplemain.cpp's EnvCreateFunc, extended with the
@@ -49,6 +61,19 @@ namespace RLGPC {
 		int memberCount = 1;
 		float siblingFraction = 0.0f;
 		int randomSeed = 123; // per-env sampler seed (each game's sampler draws its own episodes)
+
+		// Spawn curriculum (P4). When spawnCurriculumEnabled, the TeamConfigMutator overrides a fraction
+		// (spawnCurriculumProb) of episodes' native kickoff with a custom (easy) spawn: ball at center+still,
+		// each car at distance d = MIN + (MAX-MIN)*(1-ratio) along the kickoff axis facing/moving toward it.
+		// Disabled => every episode uses the native random kickoff.
+		bool spawnCurriculumEnabled = false;
+		float spawnCurriculumRatio = 1.0f;
+		float spawnCurriculumProb = 0.5f;
+
+		// Per-member reward spec (one per league member, indexed by owner id == slotOwners value). When
+		// non-empty, the env uses the per-bot ComposedReward (term routing + team_spirit/opponent_punish
+		// blend at the explicit n_blue boundary) instead of the generic CombinedReward. Empty => CombinedReward.
+		std::vector<MemberRewardConfig> memberRewardConfigs = {};
 
 		// Fixed arena mode for this env (the league builds one env per mode). Maps to GameMode.
 		// The arena's mode is fixed at Arena::Create() (Gym construction) time, so mode selection is

@@ -127,6 +127,13 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		// per-episode slot->owner routing comes from the env's active-set sampler (see EnvConfig).
 		.def_readwrite("memberPerceiver", &LearnerConfig::memberPerceiver);
 
+	// One league member's reward "program": selected term name -> weight pairs + team_spirit/opponent_punish.
+	py::class_<MemberRewardConfig>(m, "MemberRewardConfig")
+		.def(py::init<>())
+		.def_readwrite("termWeights", &MemberRewardConfig::termWeights)
+		.def_readwrite("teamSpirit", &MemberRewardConfig::teamSpirit)
+		.def_readwrite("opponentPunish", &MemberRewardConfig::opponentPunish);
+
 	py::class_<EnvConfig>(m, "EnvConfig")
 		.def(py::init<>())
 		.def_readwrite("tickSkip", &EnvConfig::tickSkip)
@@ -151,7 +158,14 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("teamWeights", &EnvConfig::teamWeights)
 		.def_readwrite("memberCount", &EnvConfig::memberCount)
 		.def_readwrite("siblingFraction", &EnvConfig::siblingFraction)
-		.def_readwrite("randomSeed", &EnvConfig::randomSeed);
+		.def_readwrite("randomSeed", &EnvConfig::randomSeed)
+		// Per-member reward spec (one per member, indexed by owner id). Empty => generic CombinedReward.
+		.def_readwrite("memberRewardConfigs", &EnvConfig::memberRewardConfigs)
+		// Spawn curriculum: when enabled, a fraction (prob) of episodes override the native kickoff with a
+		// custom (easy) spawn at distance d = MIN + (MAX-MIN)*(1-ratio).
+		.def_readwrite("spawnCurriculumEnabled", &EnvConfig::spawnCurriculumEnabled)
+		.def_readwrite("spawnCurriculumRatio", &EnvConfig::spawnCurriculumRatio)
+		.def_readwrite("spawnCurriculumProb", &EnvConfig::spawnCurriculumProb);
 
 	// Report is a metric map; expose it as a plain dict-like with a few conveniences.
 	py::class_<Report>(m, "Report")

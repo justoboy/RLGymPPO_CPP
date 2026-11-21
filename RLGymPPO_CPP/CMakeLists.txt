@@ -84,6 +84,11 @@ set_target_properties(obsbench PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 add_executable(OwnerGate "${PROJECT_SOURCE_DIR}/../tools/owner_main.cpp")
 set_target_properties(OwnerGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
 
+# GAP1/2/3 reward route+blend parity gate: pure-C++ mirror of ComposedReward's per-bot term routing +
+# team_spirit/opponent_punish blend at the explicit blue boundary (no torch/sim needed).
+add_executable(RewardGate "${PROJECT_SOURCE_DIR}/../tools/reward_main.cpp")
+set_target_properties(RewardGate PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 20)
+
 # Include JSON
 #target_include_directories(RLGymPPO_CPP PRIVATE "${PROJECT_SOURCE_DIR}/libsrc/json")
 
