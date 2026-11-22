@@ -22,14 +22,17 @@ RLGSC::Gym::StepResult RLGPC::GameInst::Step(const FList& actions) {
 
 	auto& nextObs = stepResult.obs;
 
-	{ // Update avg rewards (over the active players this step; the active set can vary per episode)
-		float totalRew = 0;
+	{ // Accumulate each slot's OWN per-step reward into its running episode return (kept separate per
+	  // slot, never summed across slots). avgStepRew is the per-step mean across active slots (a separate
+	  // diagnostic); the per-owner episode return is derived from curSlotRew at episode end (max over the
+	  // owner's slots), so a self-play episode's two symmetric cars no longer cancel to zero.
 		int nActive = (int)stepResult.reward.size();
-		for (int i = 0; i < nActive; i++)
-			totalRew += stepResult.reward[i];
-
+		float totalRew = 0;
+		for (int j = 0; j < nActive; j++) {
+			curSlotRew[j] += stepResult.reward[j];
+			totalRew += stepResult.reward[j];
+		}
 		avgStepRew.Add(totalRew, nActive);
-		curEpRew += (nActive > 0) ? (totalRew / nActive) : 0.f;
 	}
 
 	{ // Accumulate per-slot touch counts for the current episode (one increment per step the slot touched)
@@ -45,24 +48,34 @@ RLGSC::Gym::StepResult RLGPC::GameInst::Step(const FList& actions) {
 	// Environment ending
 	if (stepResult.done) {
 		// Route this episode's outcome tallies to each slot's owner. matchGoals is cumulative per episode
-		// (cars are rebuilt each episode, so it starts at 0), and curTouches is the per-slot touch count.
+		// (cars are rebuilt each episode, so it starts at 0), curTouches is the per-slot touch count, and
+		// curSlotRew is the per-slot episode return. For each owner we take the MAX over that owner's slots
+		// (the better car's return) so the reported reward never cancels; goals/touches average across the
+		// owner's slots (in self-play that is both cars -> the policy's true rate).
 		int nActive = (int)stepResult.state.players.size();
+		std::vector<float> best(MAX_SLOTS, 0.0f);
+		std::vector<int> bestCount(MAX_SLOTS, 0);
 		for (int j = 0; j < nActive; j++) {
 			int owner = (j < (int)curOwners.size()) ? curOwners[j] : 0;
 			if (owner < 0 || owner >= MAX_SLOTS) owner = 0;
 			ownerGoals[owner].Add((float)stepResult.state.players[j].matchGoals);
 			ownerTouches[owner].Add((float)curTouches[j]);
-			curTouches[j] = 0; // reset this slot's touch counter for the next episode
+			// max over this owner's slots: first slot seen sets the value, later slots raise it.
+			if (bestCount[owner] == 0) best[owner] = curSlotRew[j];
+			else best[owner] = RS_MAX(best[owner], curSlotRew[j]);
+			bestCount[owner]++;
+			curTouches[j] = 0;  // reset this slot's touch counter for the next episode
+			curSlotRew[j] = 0; // reset this slot's running return for the next episode
 		}
+		for (int o = 0; o < MAX_SLOTS; o++)
+			if (bestCount[o] > 0)
+				ownerEpRew[o].Add(best[o]);
 
 		nextObs = gym->Reset();
 
 		// New episode: the active set (and thus the per-slot owner map) may differ. Re-read it so the
 		// learner routes the NEXT episode's slots to the right members.
 		curOwners = ActiveOwners(gym->prevState);
-
-		avgEpRew += curEpRew;
-		curEpRew = 0;
 	}
 
 	curObs = nextObs;

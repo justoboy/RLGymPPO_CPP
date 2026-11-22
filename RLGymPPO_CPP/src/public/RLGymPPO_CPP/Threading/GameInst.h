@@ -38,15 +38,22 @@ namespace RLGPC {
 	// had ballTouchedStep). Goals are read cumulatively from the done-state's matchGoals.
 	std::vector<int> curTouches;
 
-	// Per-owner (member id) tallies accumulated across every episode completed this iteration. GetMetrics
-	// averages these into reports[owner]["goals_for_mean"] / ["touches_for_mean"] for the metric-gated
-	// curriculum driver to read (it gates on outcome tallies, NOT reward magnitude).
-	std::vector<AvgTracker> ownerGoals, ownerTouches;
+	// Per-slot running episode return (sum of that slot's own reward over the current episode). Kept
+	// SEPARATE per slot (never summed across slots) so a self-play episode's two cars keep their own
+	// returns; the per-owner reward is the MAX over that owner's slots (the better car's return), so it
+	// never cancels to zero the way summing both teams' symmetric rewards did.
+	std::vector<float> curSlotRew;
+
+	// Per-owner (member id) tallies accumulated across every episode completed this iteration. GetOwnerMetrics
+	// averages these into reports[owner]["goals_for_mean"] / ["touches_for_mean"] / ["Average Episode Reward"]
+	// for the metric-gated curriculum driver to read. In self-play (one member owns both cars) the goals/
+	// touches trackers average across both cars (the policy's true rate) and the reward tracker takes the
+	// max of the two cars' returns (the better car's return, so the reward graph climbs instead of flip-flopping).
+	std::vector<AvgTracker> ownerGoals, ownerTouches, ownerEpRew;
 
 	uint64_t totalSteps;
 
-	float curEpRew = 0;
-	AvgTracker avgStepRew, avgEpRew;
+	AvgTracker avgStepRew;
 
 	// Will be reset every iteration, when ResetMetrics() is called
 	Report _metrics = {};
@@ -57,19 +64,22 @@ namespace RLGPC {
 	GameInst(RLGSC::Gym* gym, RLGSC::Match* match) : gym(gym), match(match) {
 		totalSteps = 0;
 		curTouches.assign(MAX_SLOTS, 0);
+		curSlotRew.assign(MAX_SLOTS, 0.0f);
 		ownerGoals.resize(MAX_SLOTS);
 		ownerTouches.resize(MAX_SLOTS);
+		ownerEpRew.resize(MAX_SLOTS);
 	}
 
 	RG_NO_COPY(GameInst);
 
 	void ResetMetrics() {
 		avgStepRew.Reset();
-		avgEpRew.Reset();
 		_metrics.Clear();
 		for (auto& t : ownerGoals) t.Reset();
 		for (auto& t : ownerTouches) t.Reset();
+		for (auto& t : ownerEpRew) t.Reset();
 		std::fill(curTouches.begin(), curTouches.end(), 0);
+		std::fill(curSlotRew.begin(), curSlotRew.end(), 0.0f);
 	}
 
 	void Start();

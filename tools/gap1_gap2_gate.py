@@ -41,7 +41,7 @@ def make_perceiver(ef):
     return pc
 
 
-def build_learner():
+def build_learner(member_count=2, sibling_fraction=1.0, no_touch_secs=1.5, timesteps=512):
     ec = L.EnvConfig()
     ec.teamSize = 1
     ec.spawnOpponents = True
@@ -51,30 +51,36 @@ def build_learner():
     ec.queryFeatures = 208
     ec.kvFeatures = 69
     ec.nTokens = 151
-    # League path: per-episode active-set sampler stamps slotOwners (slot0->member0, slot1->member1).
-    ec.memberCount = 2
-    ec.siblingFraction = 1.0
+    # Short no-touch timeout so an episode actually ENDS within the (small) iteration budget; otherwise
+    # no episode completes and the per-owner tallies/reward stay NaN (no completed episode to average).
+    ec.noTouchTimeoutSecs = no_touch_secs
+    # League path: per-episode active-set sampler stamps slotOwners. member_count=2 + sibling=1 ->
+    # slot0->member0, slot1->member1 (sibling match). member_count=1 -> every slot owned by member0
+    # (self-play): the per-owner reward is the MAX of the two cars' returns (no cancellation) and the
+    # goals/touches tallies average across both cars (the policy's true rate).
+    ec.memberCount = member_count
+    ec.siblingFraction = sibling_fraction
     ec.teamConfigs = [(1, 1)]
     ec.teamWeights = [1.0]
     ec.randomSeed = 777
     # Non-empty memberRewardConfigs => EnvFactory builds a ComposedReward (the dynamic_cast target for
-    # set_member_reward). Start with a single low-weight term so the baseline reward is small.
-    m0 = L.MemberRewardConfig()
-    m0.termWeights = [("proximity", 0.1)]
-    m0.teamSpirit = 0.0
-    m0.opponentPunish = 0.0
-    m1 = L.MemberRewardConfig()
-    m1.termWeights = [("proximity", 0.1)]
-    m1.teamSpirit = 0.0
-    m1.opponentPunish = 0.0
-    ec.memberRewardConfigs = [m0, m1]
+    # set_member_reward). Start with a single low-weight term so the baseline reward is small. One spec
+    # per member (self-play: 1; sibling league: 2).
+    mrcs = []
+    for _ in range(member_count):
+        m = L.MemberRewardConfig()
+        m.termWeights = [("proximity", 0.1)]
+        m.teamSpirit = 0.0
+        m.opponentPunish = 0.0
+        mrcs.append(m)
+    ec.memberRewardConfigs = mrcs
 
     cfg = L.LearnerConfig()
     cfg.deviceType = L.LearnerDeviceType.CPU
     cfg.collisionMeshesFolder = r"D:\RLBotTraining\RLGymSim_CPP\collision_meshes"
     cfg.numThreads = 1
     cfg.numGamesPerThread = 1
-    cfg.timestepsPerIteration = 64
+    cfg.timestepsPerIteration = timesteps
     cfg.expBufferSize = 4096
     cfg.standardizeReturns = False  # P6: match Python raw returns
     cfg.checkpointLoadFolder = ""
@@ -85,13 +91,16 @@ def build_learner():
     cfg.ppo.epochs = 1
     cfg.ppo.lambdaFSP = 0.0
 
-    cfg.memberPerceiver = [make_perceiver(39), make_perceiver(39)]
+    cfg.memberPerceiver = [make_perceiver(39) for _ in range(member_count)]
     return L.create_learner(ec, cfg)
 
 
-def main():
+def run_league():
+    # One learner per process: torch::set_num_interop_threads can only be called once per process, so
+    # the league and self-play learners CANNOT coexist in one interpreter. The driver runs this script
+    # once per mode (argv[1]) and aggregates the two exit codes.
     print("CWD:", os.getcwd())
-    learner = build_learner()
+    learner = build_learner(member_count=2, sibling_fraction=1.0)
     assert learner.obs_size == 208 + 151 * 69 + 151, f"unexpected obs_size {learner.obs_size}"
 
     learner.start_agents()
@@ -127,5 +136,27 @@ def main():
     print("GAP1/GAP2 GATE PASS")
 
 
+def run_selfplay():
+    # --- Self-play owner-collapse fix: member_count=1 (one policy owns both cars). The reported
+    # Average Episode Reward must be the MAX of the two cars' returns (nonzero), NOT the old cross-team
+    # sum that cancelled to ~1e-8. Use opponentPunish=1.0 so the OLD cross-team sum WOULD cancel; the
+    # per-owner max must keep the reported reward nonzero. ---
+    sp = build_learner(member_count=1, sibling_fraction=0.0, no_touch_secs=1.5, timesteps=512)
+    sp.start_agents()
+    sp.set_member_reward(0, {"proximity": 1.0}, 0.6, 1.0)  # opponentPunish=1.0 -> symmetric cancel case
+    sp_reports = sp.run_iteration()
+    assert isinstance(sp_reports, list) and len(sp_reports) == 1, "self-play expected 1 member report"
+    spd = sp_reports[0].as_dict()
+    er = float(spd.get("Average Episode Reward", 0.0))
+    print(f"self-play member0 Average Episode Reward (max of both cars): {er}")
+    assert abs(er) > 1e-3, f"self-play reward still cancels to ~0 (got {er}); owner-max fix not working"
+    sp.stop_agents()
+    print("SELF-PLAY OWNER-COLLAPSE GATE PASS")
+
+
 if __name__ == "__main__":
-    main()
+    mode = sys.argv[1] if len(sys.argv) > 1 else "league"
+    if mode == "selfplay":
+        run_selfplay()
+    else:
+        run_league()

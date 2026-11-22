@@ -80,16 +80,16 @@ std::vector<RLGPC::GameTrajectory> RLGPC::ThreadAgentManager::CollectTimesteps(u
 }
 
 void RLGPC::ThreadAgentManager::GetMetrics(Report& report) {
-	AvgTracker avgStepRew, avgEpRew;
+	// Per-step mean reward across active slots (diagnostic). The per-owner episode reward is NOT summed
+	// here (that cross-team sum was what cancelled to zero); it is routed per-owner in GetOwnerMetrics.
+	AvgTracker avgStepRew;
 	for (auto agent : agents) {
 		for (auto game : agent->gameInsts) {
 			avgStepRew += game->avgStepRew;
-			avgEpRew += game->avgEpRew;
 		}
 	}
 	
 	report["Average Step Reward"] = avgStepRew.Get();
-	report["Average Episode Reward"] = avgEpRew.Get();
 
 	ThreadAgent::Times avgTimes = {};
 
@@ -109,7 +109,9 @@ void RLGPC::ThreadAgentManager::GetMetrics(Report& report) {
 void RLGPC::ThreadAgentManager::GetOwnerMetrics(std::vector<Report>& reports) {
 	// One accumulator per owner (member). Each game accumulated per-owner tallies across the episodes it
 	// completed this iteration; sum them per owner and average (AvgTracker::Get returns NAN if no episodes).
-	std::vector<AvgTracker> goals(policies.size()), touches(policies.size());
+	// epRew is the mean of each owner's per-episode max-slot return (the better car's return in self-play),
+	// so the reported reward climbs with skill instead of cancelling across the two symmetric teams.
+	std::vector<AvgTracker> goals(policies.size()), touches(policies.size()), epRew(policies.size());
 
 	for (auto agent : agents) {
 		agent->gameStepMutex.lock();
@@ -117,6 +119,7 @@ void RLGPC::ThreadAgentManager::GetOwnerMetrics(std::vector<Report>& reports) {
 			for (size_t g = 0; g < policies.size(); g++) {
 				goals[g] += game->ownerGoals[g];
 				touches[g] += game->ownerTouches[g];
+				epRew[g] += game->ownerEpRew[g];
 			}
 		}
 		agent->gameStepMutex.unlock();
@@ -125,6 +128,7 @@ void RLGPC::ThreadAgentManager::GetOwnerMetrics(std::vector<Report>& reports) {
 	for (size_t g = 0; g < policies.size() && g < reports.size(); g++) {
 		reports[g]["goals_for_mean"] = goals[g].Get();
 		reports[g]["touches_for_mean"] = touches[g].Get();
+		reports[g]["Average Episode Reward"] = epRew[g].Get();
 	}
 }
 
