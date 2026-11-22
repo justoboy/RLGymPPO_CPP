@@ -165,7 +165,9 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		// custom (easy) spawn at distance d = MIN + (MAX-MIN)*(1-ratio).
 		.def_readwrite("spawnCurriculumEnabled", &EnvConfig::spawnCurriculumEnabled)
 		.def_readwrite("spawnCurriculumRatio", &EnvConfig::spawnCurriculumRatio)
-		.def_readwrite("spawnCurriculumProb", &EnvConfig::spawnCurriculumProb);
+		.def_readwrite("spawnCurriculumProb", &EnvConfig::spawnCurriculumProb)
+		// Actor head type: selects the env's action parser (continuous floats vs discrete bin-indices).
+		.def_readwrite("headType", &EnvConfig::headType);
 
 	// Report is a metric map; expose it as a plain dict-like with a few conveniences.
 	py::class_<Report>(m, "Report")

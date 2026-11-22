@@ -1,6 +1,7 @@
 #include "GaussianPolicy.h"
 
 #include <private/RLGymPPO_CPP/FrameworkTorch.h>
+#include <limits>
 
 // CONTINUOUS arm (reference-implementation parity):
 //   mean, log_std = head_out.split(nControls); log_std.clamp(-5, 2)
@@ -109,7 +110,13 @@ RLGPC::GaussianPolicy::BackpropResult RLGPC::GaussianPolicy::GetBackpropData(tor
 		auto idx = acts.to(torch::kLong, true).view({ logits.size(0), logits.size(1) });
 		auto idxG = idx.unsqueeze(-1);
 		auto actionLogProbs = logProbs.gather(2, idxG).squeeze(2).sum(1); // (B,)
-		auto entropy = -(probs * logProbs).sum(-1).sum(1);                // (B,)
+		// Reference parity: torch Categorical.entropy() clamps log(p) to a LARGE FINITE negative
+		// (finfo.min) before the p*log(p) product, so a pad slot (p=0) contributes 0*finite = 0. The raw
+		// log_softmax here is literal -inf at pads, so an UNclamped 0*-inf = nan (IEEE) poisons the policy
+		// loss -> nan weights -> multinomial crash. Clamp to a finite floor to match the reference exactly.
+		// The chosen-bin gather above is unaffected (a chosen bin is always a real bin, already finite).
+		auto logProbsC = torch::clamp(logProbs, std::numeric_limits<float>::lowest());
+		auto entropy = -(probs * logProbsC).sum(-1).sum(1);                // (B,)
 
 		return BackpropResult{ actionLogProbs.to(device, true), entropy.to(device).mean() };
 	}

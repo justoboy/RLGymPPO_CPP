@@ -12,6 +12,7 @@
 #include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
 #include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
 #include <RLGymSim_CPP/Utils/ActionParsers/ContinuousActionParser.h>
+#include <RLGymSim_CPP/Utils/ActionParsers/PerChannelDiscreteActionParser.h>
 
 using namespace RLGSC;
 
@@ -65,7 +66,12 @@ namespace RLGPC {
 		obs->activeMode = ec.gameMode;
 		obs->tickSkip = ec.tickSkip;
 
-		auto actionParser = new ContinuousActionParser(ec.tickSkip);
+		// Action parser matches the actor head: continuous reads the 9 floats as control values; discrete
+		// decodes the 9 bin-indices via the fixed per-channel centers. Must agree with the perceiver's
+		// headType (set in CreateLearner) so the policy's action encoding and the env's decode match.
+		ActionParser* actionParser = (ec.headType == HeadType::DISCRETE)
+			? static_cast<ActionParser*>(new PerChannelDiscreteActionParser(ec.tickSkip))
+			: static_cast<ActionParser*>(new ContinuousActionParser(ec.tickSkip));
 
 		// League mode (teamConfigs set): per-episode active-set spawner + matchup sampler that stamps the
 		// per-slot owner map (and optionally overrides with a custom spawn). Self-play (teamConfigs empty):
@@ -109,6 +115,9 @@ Learner* CreateLearner(const EnvConfig& ec, const LearnerConfig& cfg) {
 	out.ppo.perceiver.nTokens = ec.nTokens;
 	out.ppo.perceiver.nControls = ec.nControls;
 	out.ppo.perceiver.entityFeatures = ec.entityFeatures;
+	// Head type must match the env's action parser (selected from ec.headType above) so the policy's
+	// action encoding (Gaussian mean vs per-channel categorical bins) agrees with the env's decode.
+	out.ppo.perceiver.headType = ec.headType;
 	return new Learner(MakeEnvCreateFn(ec), out);
 }
 

@@ -86,6 +86,12 @@ namespace RLGPC {
 		int nTokens = 151;
 		int nControls = 9;
 		int entityFeatures = 39;
+
+		// Actor head type (the switchable-arm knob). Selects the env's action parser: CONTINUOUS ->
+		// ContinuousActionParser (reads the 9 floats as control values); DISCRETE ->
+		// PerChannelDiscreteActionParser (decodes the 9 bin-indices via the fixed per-channel centers).
+		// Must match the perceiver's headType so the policy's action encoding and the env's decode agree.
+		HeadType headType = HeadType::CONTINUOUS;
 	};
 
 	// Factory that builds a Learner from an EnvConfig + LearnerConfig. The single generic verb the

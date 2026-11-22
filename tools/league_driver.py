@@ -90,6 +90,9 @@ def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs,
     ec.kvFeatures = int(sup["kv_features"])
     ec.nTokens = int(sup["n_tokens"])
     ec.nControls = int(sup["n_controls"])
+    # Head type drives the env's action parser (continuous floats vs discrete bin-index decode). Must match
+    # the perceiver head (build_perceiver) so the policy's action encoding and the env decode agree.
+    ec.headType = L.HeadType.DISCRETE if sup.get("head") == "discrete" else L.HeadType.CONTINUOUS
     # Per-episode active-set / matchup sampler.
     ec.teamConfigs = [tuple(c) for c in team_configs]
     ec.teamWeights = [float(w) for w in team_weights]
