@@ -106,6 +106,28 @@ void RLGPC::ThreadAgentManager::GetMetrics(Report& report) {
 	report["Policy Infer Time"] = avgTimes.policyInferTime + avgTimes.trajAppendTime;
 }
 
+void RLGPC::ThreadAgentManager::GetOwnerMetrics(std::vector<Report>& reports) {
+	// One accumulator per owner (member). Each game accumulated per-owner tallies across the episodes it
+	// completed this iteration; sum them per owner and average (AvgTracker::Get returns NAN if no episodes).
+	std::vector<AvgTracker> goals(policies.size()), touches(policies.size());
+
+	for (auto agent : agents) {
+		agent->gameStepMutex.lock();
+		for (auto game : agent->gameInsts) {
+			for (size_t g = 0; g < policies.size(); g++) {
+				goals[g] += game->ownerGoals[g];
+				touches[g] += game->ownerTouches[g];
+			}
+		}
+		agent->gameStepMutex.unlock();
+	}
+
+	for (size_t g = 0; g < policies.size() && g < reports.size(); g++) {
+		reports[g]["goals_for_mean"] = goals[g].Get();
+		reports[g]["touches_for_mean"] = touches[g].Get();
+	}
+}
+
 void RLGPC::ThreadAgentManager::ResetMetrics() {
 	for (auto agent : agents) {
 		agent->times = {};

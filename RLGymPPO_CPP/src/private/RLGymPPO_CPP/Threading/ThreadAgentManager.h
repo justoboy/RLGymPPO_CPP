@@ -124,6 +124,12 @@ namespace RLGPC {
 		void GetMetrics(Report& report);
 		void ResetMetrics();
 
+		// Aggregate every game's per-owner outcome tallies (goals/touches) into one Report per owner.
+		// Fills reports[g]["goals_for_mean"] / ["touches_for_mean"] with the mean per-episode count for
+		// owner g across all games this iteration (NAN if owner g completed no episodes). The metric-gated
+		// curriculum driver reads these, NOT reward magnitude.
+		void GetOwnerMetrics(std::vector<Report>& reports);
+
 		// Collect `amount` timesteps, returning one GameTrajectory per owner (indexed by owner id).
 		std::vector<GameTrajectory> CollectTimesteps(uint64_t amount);
 

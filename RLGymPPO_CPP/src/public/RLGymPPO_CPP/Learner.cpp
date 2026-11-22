@@ -7,6 +7,10 @@
 #include <RLGymPPO_CPP/PPO/ExperienceBuffer.h>
 #include <RLGymPPO_CPP/Threading/ThreadAgentManager.h>
 
+// Live-env mutator/reward types the runtime curriculum setters downcast to.
+#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
+#include <RLGymSim_CPP/Utils/RewardFunctions/RewardTerms.h>
+
 #include <torch/cuda.h>
 #include <ATen/Context.h>
 #include "../libsrc/json/nlohmann/json.hpp"
@@ -621,6 +625,9 @@ std::vector<RLGPC::Report> RLGPC::Learner::RunIteration() {
 	Report& report = reports[0];
 	agentMgr->GetMetrics(report);
 
+	// Per-owner outcome tallies (goals/touches per episode) for the metric-gated curriculum driver.
+	agentMgr->GetOwnerMetrics(reports);
+
 	if (!config.collectionDuringLearn) {
 		agentMgr->disableCollection = false;
 	}
@@ -818,6 +825,50 @@ void RLGPC::Learner::SeedMember(int member, std::filesystem::path folder) {
 	if (member < 0 || member >= (int)ppos.size())
 		RG_ERR_CLOSE("Learner::SeedMember(): member index " << member << " out of range");
 	ppos[member]->SeedFrom(folder);
+}
+
+void RLGPC::Learner::SetSpawnCurriculum(bool enabled, float ratio, float prob) {
+	// Mutate every live game's TeamConfigMutator spawn holder. Games using a non-league setter (plain
+	// RandomState self-play) have no holder and are skipped. Locks each agent's step mutex so the worker
+	// doesn't read the holder mid-write.
+	for (auto* agent : agentMgr->agents) {
+		agent->gameStepMutex.lock();
+		for (auto* game : agent->gameInsts) {
+			auto* tcm = dynamic_cast<RLGSC::TeamConfigMutator*>(game->match->stateSetter);
+			if (tcm && tcm->spawn) {
+				tcm->spawn->enabled = enabled;
+				tcm->spawn->ratio = ratio;
+				tcm->spawn->prob = prob;
+			}
+		}
+		agent->gameStepMutex.unlock();
+	}
+}
+
+void RLGPC::Learner::SetMemberReward(int member, const std::vector<std::pair<std::string, float>>& termWeights,
+                                     float teamSpirit, float opponentPunish) {
+	if (member < 0 || member >= (int)ppos.size())
+		RG_ERR_CLOSE("Learner::SetMemberReward(): member index " << member << " out of range");
+
+	// Rebuild this member's reward spec on every live ComposedReward. Games using a non-composed reward
+	// (plain CombinedReward self-play) are skipped. Locks each agent's step mutex for atomic mutation.
+	for (auto* agent : agentMgr->agents) {
+		agent->gameStepMutex.lock();
+		for (auto* game : agent->gameInsts) {
+			auto* cr = dynamic_cast<RLGSC::ComposedReward*>(game->match->rewardFn);
+			if (!cr)
+				continue;
+			if (member >= (int)cr->members.size())
+				cr->members.resize(member + 1);
+			RLGSC::MemberRewardSpec spec;
+			for (const auto& kv : termWeights)
+				spec.termWeights[kv.first] = kv.second;
+			spec.teamSpirit = teamSpirit;
+			spec.opponentPunish = opponentPunish;
+			cr->members[member] = std::move(spec);
+		}
+		agent->gameStepMutex.unlock();
+	}
 }
 
 void RLGPC::Learner::UpdateLearningRates(float policyLR, float criticLR) {

@@ -194,6 +194,16 @@ PYBIND11_MODULE(rlgym_learner, m) {
 			l.SeedMember(member, std::filesystem::path(folder));
 		}, py::arg("member"), py::arg("folder"),
 		"Seed a member's weights from a WEIG checkpoint folder (PPO_POLICY.lt etc.). Optimizers stay fresh.")
+		// Runtime curriculum setters (mutate the live envs in place; no learner rebuild).
+		.def("set_spawn_curriculum", &Learner::SetSpawnCurriculum,
+			py::arg("enabled"), py::arg("ratio"), py::arg("prob"),
+			"Enable/adjust the spawn-curriculum override on every live env (recede spawn distance via ratio 1->0).")
+		.def("set_member_reward", [](Learner& l, int member, const std::map<std::string, float>& termWeights,
+		                            float teamSpirit, float opponentPunish) {
+			std::vector<std::pair<std::string, float>> tw(termWeights.begin(), termWeights.end());
+			l.SetMemberReward(member, tw, teamSpirit, opponentPunish);
+		}, py::arg("member"), py::arg("term_weights"), py::arg("team_spirit"), py::arg("opponent_punish"),
+		"Rebind a member's reward program (term name -> weight, + team_spirit/opponent_punish) on every live env.")
 		.def("get_all_game_metrics", &Learner::GetAllGameMetrics)
 		.def_property_readonly("obs_size", [](const Learner& l) { return l.obsSize; })
 		.def_property_readonly("action_amount", [](const Learner& l) { return l.actionAmount; })

@@ -32,11 +32,29 @@ RLGSC::Gym::StepResult RLGPC::GameInst::Step(const FList& actions) {
 		curEpRew += (nActive > 0) ? (totalRew / nActive) : 0.f;
 	}
 
+	{ // Accumulate per-slot touch counts for the current episode (one increment per step the slot touched)
+		int nActive = (int)stepResult.state.players.size();
+		for (int j = 0; j < nActive; j++)
+			if (stepResult.state.players[j].ballTouchedStep)
+				curTouches[j] += 1;
+	}
+
 	if (stepCallback)
 		stepCallback(this, stepResult, _metrics);
 
 	// Environment ending
 	if (stepResult.done) {
+		// Route this episode's outcome tallies to each slot's owner. matchGoals is cumulative per episode
+		// (cars are rebuilt each episode, so it starts at 0), and curTouches is the per-slot touch count.
+		int nActive = (int)stepResult.state.players.size();
+		for (int j = 0; j < nActive; j++) {
+			int owner = (j < (int)curOwners.size()) ? curOwners[j] : 0;
+			if (owner < 0 || owner >= MAX_SLOTS) owner = 0;
+			ownerGoals[owner].Add((float)stepResult.state.players[j].matchGoals);
+			ownerTouches[owner].Add((float)curTouches[j]);
+			curTouches[j] = 0; // reset this slot's touch counter for the next episode
+		}
+
 		nextObs = gym->Reset();
 
 		// New episode: the active set (and thus the per-slot owner map) may differ. Re-read it so the

@@ -71,6 +71,15 @@ namespace RLGPC {
 	// `folder` (PPO_POLICY.lt etc., produced by tools/convert_bc_checkpoint.py). Optimizers stay fresh.
 	void SeedMember(int member, std::filesystem::path folder);
 
+	// Runtime curriculum setters. These mutate the LIVE envs in place (each game's TeamConfigMutator
+	// SpawnHolder / ComposedReward member spec) so the metric-gated driver can fade the reward scaffold or
+	// recede the spawn distance mid-run WITHOUT rebuilding the learner. Games whose setter/reward isn't the
+	// league variant (e.g. plain RandomState self-play) are skipped (no-op). Locks each agent's game-step
+	// mutex so the mutation is atomic w.r.t. the collection worker.
+	void SetSpawnCurriculum(bool enabled, float ratio, float prob);
+	void SetMemberReward(int member, const std::vector<std::pair<std::string, float>>& termWeights,
+	                     float teamSpirit, float opponentPunish);
+
 		IterationCallback iterationCallback = NULL;
 		StepCallback stepCallback = NULL;
 

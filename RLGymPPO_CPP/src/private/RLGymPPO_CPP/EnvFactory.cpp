@@ -75,9 +75,14 @@ namespace RLGPC {
 		if (ec.teamConfigs.empty()) {
 			stateSetter = new RandomState(true, true, true, ec.teamSize, ec.spawnOpponents, CAR_CONFIG_OCTANE);
 		} else {
-			SpawnHolder* spawn = nullptr;
-			if (ec.spawnCurriculumEnabled)
-				spawn = new SpawnHolder{ .enabled = true, .ratio = ec.spawnCurriculumRatio, .prob = ec.spawnCurriculumProb };
+			// Always allocate a SpawnHolder for the league path so the runtime SetSpawnCurriculum() can
+			// enable/adjust the curriculum mid-run even when it starts disabled. When disabled the mutator
+			// treats it as a no-op (native kickoff every episode); enabling later flips `enabled` to true.
+			auto* spawn = new SpawnHolder{
+				.enabled = ec.spawnCurriculumEnabled,
+				.ratio = ec.spawnCurriculumRatio,
+				.prob = ec.spawnCurriculumProb
+			};
 			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed, spawn);
 		}
 
