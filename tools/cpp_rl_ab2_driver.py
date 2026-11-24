@@ -182,9 +182,12 @@ def main():
         print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] resumed at epoch {done}/{epochs} "
               f"(touch={touch['state']} goal={goal['state']})", flush=True)
     else:
-        touch = {"state": "ACQUIRING", "streak": 0, "score": 0.0,
+        # curriculum off => both wheels start OFF (native kickoff + DEFAULT_REWARD, no drill ever fires);
+        # curriculum on => both wheels start ACQUIRING (the two-wheel curriculum is active from epoch 0).
+        init_state = "ACQUIRING" if bool(job.get("curriculum", True)) else "OFF"
+        touch = {"state": init_state, "streak": 0, "score": 0.0,
                  "x": float(job["x_touch"]), "y": int(job["y_touch"]), "z": float(job["z_touch"])}
-        goal = {"state": "ACQUIRING", "streak": 0, "score": 0.0,
+        goal = {"state": init_state, "streak": 0, "score": 0.0,
                 "x": float(job["x_goal"]), "y": int(job["y_goal"]), "z": float(job["z_goal"])}
         done = 0
         curve = []
