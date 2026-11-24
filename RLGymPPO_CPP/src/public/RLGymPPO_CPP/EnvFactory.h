@@ -62,13 +62,18 @@ namespace RLGPC {
 		float siblingFraction = 0.0f;
 		int randomSeed = 123; // per-env sampler seed (each game's sampler draws its own episodes)
 
-		// Spawn curriculum (P4). When spawnCurriculumEnabled, the TeamConfigMutator overrides a fraction
-		// (spawnCurriculumProb) of episodes' native kickoff with a custom (easy) spawn: ball at center+still,
-		// each car at distance d = MIN + (MAX-MIN)*(1-ratio) along the kickoff axis facing/moving toward it.
-		// Disabled => every episode uses the native random kickoff.
-		bool spawnCurriculumEnabled = false;
-		float spawnCurriculumRatio = 1.0f;
-		float spawnCurriculumProb = 0.5f;
+		// Two-wheel spawn curriculum (touch + goal). When wheelEnabled, the TeamConfigMutator may override a
+		// fraction of episodes' native kickoff with a drill spawn (touch: car at distance d from a center ball;
+		// goal: a 1v0 breakaway with the ball on the lone car's attack axis). The driver advances each wheel's
+		// streak/score state machine per epoch and writes the per-wheel geometry + fire-probability via
+		// SetWheelConfig(); wheelEnabled just gates whether the curriculum is active at all. Disabled =>
+		// every episode uses the native random kickoff.
+		bool  wheelEnabled    = false;
+		float wheelDrillTime  = 10.0f;   // clock cap (s) on a drill episode
+		float wheelNativeTime = 300.0f;  // clock cap (s) on a native (non-drill) episode
+
+		// Overtime grace (s) before a tied game is force-truncated (the ScoreboardTimeCondition terminal).
+		float maxOvertimeSeconds = 300.0f;
 
 		// Per-member reward spec (one per league member, indexed by owner id == slotOwners value). When
 		// non-empty, the env uses the per-bot ComposedReward (term routing + team_spirit/opponent_punish

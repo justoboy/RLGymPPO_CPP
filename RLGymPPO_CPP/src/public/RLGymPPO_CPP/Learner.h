@@ -72,11 +72,18 @@ namespace RLGPC {
 	void SeedMember(int member, std::filesystem::path folder);
 
 	// Runtime curriculum setters. These mutate the LIVE envs in place (each game's TeamConfigMutator
-	// SpawnHolder / ComposedReward member spec) so the metric-gated driver can fade the reward scaffold or
-	// recede the spawn distance mid-run WITHOUT rebuilding the learner. Games whose setter/reward isn't the
-	// league variant (e.g. plain RandomState self-play) are skipped (no-op). Locks each agent's game-step
-	// mutex so the mutation is atomic w.r.t. the collection worker.
-	void SetSpawnCurriculum(bool enabled, float ratio, float prob);
+	// WheelHolder / ComposedReward member spec) so the metric-gated driver can advance the two-wheel
+	// curriculum or recede the reward scaffold mid-run WITHOUT rebuilding the learner. Games whose
+	// setter/reward isn't the league variant (e.g. plain RandomState self-play) are skipped (no-op).
+	// Locks each agent's game-step mutex so the mutation is atomic w.r.t. the collection worker.
+	// SetWheelConfig writes every live game's WheelHolder: touchEnabled/goalEnabled gate each wheel (OFF =>
+	// that drill never fires); touchD/touchProb drive the touch wheel (car->ball distance + per-episode fire
+	// prob); goalBallY/goalProb drive the goal wheel (ball |y| on the lone car's attack axis + fire prob);
+	// drillTime/nativeTime set the per-episode clock cap. The driver advances each wheel's state machine per
+	// epoch and calls this once per epoch with the current per-wheel geometry + probability.
+	void SetWheelConfig(bool touchEnabled, float touchD, float touchProb,
+	                    bool goalEnabled, float goalBallY, float goalProb,
+	                    float drillTime, float nativeTime);
 	void SetMemberReward(int member, const std::vector<std::pair<std::string, float>>& termWeights,
 	                     float teamSpirit, float opponentPunish);
 

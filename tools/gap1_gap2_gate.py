@@ -3,7 +3,7 @@
 GAP2: every member's report must carry per-owner outcome tallies (goals_for_mean /
 touches_for_mean) that the metric-gated curriculum driver gates on.
 
-GAP1: the runtime setters (set_member_reward / set_spawn_curriculum) must mutate the LIVE envs
+GAP1: the runtime setters (set_member_reward / set_wheel_config) must mutate the LIVE envs
 in place (no learner rebuild) and leave the learner still able to run a valid iteration. To make
 set_member_reward observable, the env is built on the league path with memberRewardConfigs set, so
 the reward is a ComposedReward (the dynamic_cast target) rather than the plain CombinedReward.
@@ -119,8 +119,10 @@ def run_league():
     # --- GAP1: rebind each member's reward program on the LIVE ComposedReward (heavy weight). ---
     learner.set_member_reward(0, {"goal": 5.0, "speed": 2.0}, 0.8, 1.0)
     learner.set_member_reward(1, {"goal": 5.0, "speed": 2.0}, 0.8, 1.0)
-    # --- GAP1: enable the spawn curriculum on the live TeamConfigMutator (recede distance, prob 1). ---
-    learner.set_spawn_curriculum(True, 0.5, 1.0)
+    # --- GAP1: enable the two-wheel curriculum on the live TeamConfigMutator (both wheels ON, prob 1). ---
+    # set_wheel_config(touch_enabled, touch_d, touch_prob, goal_enabled, goal_ball_y, goal_prob,
+    #                  drill_time, native_time). prob 1 -> every episode fires the drill.
+    learner.set_wheel_config(True, 400.0, 1.0, True, 0.0, 1.0, 10.0, 300.0)
 
     # --- Iteration 2: setters must not crash and the learner must still produce valid reports. ---
     reports2 = learner.run_iteration()

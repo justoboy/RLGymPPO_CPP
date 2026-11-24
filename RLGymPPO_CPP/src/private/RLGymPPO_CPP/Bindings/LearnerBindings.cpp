@@ -161,11 +161,12 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("randomSeed", &EnvConfig::randomSeed)
 		// Per-member reward spec (one per member, indexed by owner id). Empty => generic CombinedReward.
 		.def_readwrite("memberRewardConfigs", &EnvConfig::memberRewardConfigs)
-		// Spawn curriculum: when enabled, a fraction (prob) of episodes override the native kickoff with a
-		// custom (easy) spawn at distance d = MIN + (MAX-MIN)*(1-ratio).
-		.def_readwrite("spawnCurriculumEnabled", &EnvConfig::spawnCurriculumEnabled)
-		.def_readwrite("spawnCurriculumRatio", &EnvConfig::spawnCurriculumRatio)
-		.def_readwrite("spawnCurriculumProb", &EnvConfig::spawnCurriculumProb)
+		// Two-wheel curriculum: when wheelEnabled, the mutator may override a fraction of episodes' native
+		// kickoff with a drill spawn (touch / goal). drillTime/nativeTime are the per-episode clock caps.
+		.def_readwrite("wheelEnabled", &EnvConfig::wheelEnabled)
+		.def_readwrite("wheelDrillTime", &EnvConfig::wheelDrillTime)
+		.def_readwrite("wheelNativeTime", &EnvConfig::wheelNativeTime)
+		.def_readwrite("maxOvertimeSeconds", &EnvConfig::maxOvertimeSeconds)
 		// Actor head type: selects the env's action parser (continuous floats vs discrete bin-indices).
 		.def_readwrite("headType", &EnvConfig::headType);
 
@@ -197,9 +198,12 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		}, py::arg("member"), py::arg("folder"),
 		"Seed a member's weights from a WEIG checkpoint folder (PPO_POLICY.lt etc.). Optimizers stay fresh.")
 		// Runtime curriculum setters (mutate the live envs in place; no learner rebuild).
-		.def("set_spawn_curriculum", &Learner::SetSpawnCurriculum,
-			py::arg("enabled"), py::arg("ratio"), py::arg("prob"),
-			"Enable/adjust the spawn-curriculum override on every live env (recede spawn distance via ratio 1->0).")
+		.def("set_wheel_config", &Learner::SetWheelConfig,
+			py::arg("touch_enabled"), py::arg("touch_d"), py::arg("touch_prob"),
+			py::arg("goal_enabled"), py::arg("goal_ball_y"), py::arg("goal_prob"),
+			py::arg("drill_time"), py::arg("native_time"),
+			"Write the two-wheel curriculum config (per-wheel enabled/geometry/prob + per-episode clock cap) "
+			"onto every live env. The driver advances each wheel's state machine per epoch and calls this.")
 		.def("set_member_reward", [](Learner& l, int member, const std::map<std::string, float>& termWeights,
 		                            float teamSpirit, float opponentPunish) {
 			std::vector<std::pair<std::string, float>> tw(termWeights.begin(), termWeights.end());

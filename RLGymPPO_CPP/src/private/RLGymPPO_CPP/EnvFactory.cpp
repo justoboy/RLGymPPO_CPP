@@ -8,6 +8,7 @@
 #include <RLGymSim_CPP/Utils/RewardFunctions/RewardTerms.h>
 #include <RLGymSim_CPP/Utils/TerminalConditions/NoTouchCondition.h>
 #include <RLGymSim_CPP/Utils/TerminalConditions/GoalScoreCondition.h>
+#include <RLGymSim_CPP/Utils/TerminalConditions/ScoreboardGoalCondition.h>
 #include <RLGymSim_CPP/Utils/OBSBuilders/TemporalObsBuilder.h>
 #include <RLGymSim_CPP/Utils/StateSetters/RandomState.h>
 #include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
@@ -58,7 +59,8 @@ namespace RLGPC {
 
 		std::vector<TerminalCondition*> terminalConditions = {
 			new NoTouchCondition(ec.noTouchTimeoutSecs * 120 / ec.tickSkip),
-			new GoalScoreCondition()
+			new ScoreboardGoalCondition(1),   // terminate when either team reaches 1 goal (the drill's objective)
+			new ScoreboardTimeCondition(ec.maxOvertimeSeconds) // truncate on the per-episode clock cap / overtime
 		};
 
 		// Superset temporal obs builder: emits q(208) ++ kv(151*69) ++ m(151) per agent.
@@ -74,22 +76,28 @@ namespace RLGPC {
 			: static_cast<ActionParser*>(new ContinuousActionParser(ec.tickSkip));
 
 		// League mode (teamConfigs set): per-episode active-set spawner + matchup sampler that stamps the
-		// per-slot owner map (and optionally overrides with a custom spawn). Self-play (teamConfigs empty):
+		// per-slot owner map (and optionally overrides with a drill spawn). Self-play (teamConfigs empty):
 		// random-kickoff setter that spawns teamSize (+opponents) cars into the fresh empty arena; every
 		// slot is owned by member 0 (self-play).
 		StateSetter* stateSetter;
 		if (ec.teamConfigs.empty()) {
 			stateSetter = new RandomState(true, true, true, ec.teamSize, ec.spawnOpponents, CAR_CONFIG_OCTANE);
 		} else {
-			// Always allocate a SpawnHolder for the league path so the runtime SetSpawnCurriculum() can
-			// enable/adjust the curriculum mid-run even when it starts disabled. When disabled the mutator
-			// treats it as a no-op (native kickoff every episode); enabling later flips `enabled` to true.
-			auto* spawn = new SpawnHolder{
-				.enabled = ec.spawnCurriculumEnabled,
-				.ratio = ec.spawnCurriculumRatio,
-				.prob = ec.spawnCurriculumProb
+			// Always allocate a WheelHolder for the league path so the runtime SetWheelConfig() can
+			// enable/adjust the two-wheel curriculum mid-run even when it starts disabled. When a wheel is
+			// disabled the mutator never fires that drill (native kickoff on that axis); enabling later
+			// flips that wheel's `*_enabled` to true. The driver overwrites all fields per epoch.
+			auto* wheel = new WheelHolder{
+				.touch_enabled = ec.wheelEnabled,
+				.touch_d       = 400.0f,
+				.touch_prob    = 0.5f,
+				.goal_enabled  = ec.wheelEnabled,
+				.goal_ball_y   = 0.0f,
+				.goal_prob     = 0.5f,
+				.drill_time    = ec.wheelDrillTime,
+				.native_time   = ec.wheelNativeTime
 			};
-			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed, spawn);
+			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed, wheel);
 		}
 
 		Match* match = new Match(

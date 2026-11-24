@@ -73,8 +73,8 @@ def read_spec(weig_folder):
 
 def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs, team_weights,
                      member_count, sibling_fraction, random_seed,
-                     member_reward_configs=None, spawn_curriculum_enabled=False,
-                     spawn_curriculum_ratio=1.0, spawn_curriculum_prob=0.5):
+                     member_reward_configs=None, wheel_enabled=False,
+                     wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0):
     """EnvConfig at the superset (widest) member layout. The env always emits the superset flat obs;
     the C++ threading layer column-projects each slot down to its owner's own width. Routing is
     PER-EPISODE: the env's TeamConfigMutator samples a (n_blue,n_orange) config each reset and stamps
@@ -110,10 +110,14 @@ def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs,
             cfg.opponentPunish = float(mrc["opponent_punish"])
             configs.append(cfg)
         ec.memberRewardConfigs = configs
-    # Spawn curriculum (optional easy-spawn override on a fraction of episodes).
-    ec.spawnCurriculumEnabled = bool(spawn_curriculum_enabled)
-    ec.spawnCurriculumRatio = float(spawn_curriculum_ratio)
-    ec.spawnCurriculumProb = float(spawn_curriculum_prob)
+    # Two-wheel spawn curriculum (touch + goal). wheelEnabled gates the curriculum; the per-wheel geometry +
+    # fire-probability are pushed per-epoch via learner.set_wheel_config(). drill/native are the per-episode
+    # clock caps; max_overtime_seconds is the tied-game overtime truncation (set >= native so native episodes
+    # end on regulation expiry, not an earlier overtime truncation).
+    ec.wheelEnabled = bool(wheel_enabled)
+    ec.wheelDrillTime = float(wheel_drill_time)
+    ec.wheelNativeTime = float(wheel_native_time)
+    ec.maxOvertimeSeconds = float(max_overtime_seconds)
     return ec
 
 
@@ -141,8 +145,8 @@ class LeagueDriver:
                  batch_size=32, mini_batch_size=16, epochs=1,
                  actor_lr=1e-4, critic_lr=1e-4, ent_coef=0.01, clip_range=0.2, lambda_fsp=0.0,
                  standardize_returns=False, device="CPU",
-                 member_reward_configs=None, spawn_curriculum_enabled=False,
-                 spawn_curriculum_ratio=1.0, spawn_curriculum_prob=0.5):
+                 member_reward_configs=None, wheel_enabled=False,
+                 wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0):
         self.L = L
         self.learner = None
         self.member_weig = []
@@ -163,9 +167,9 @@ class LeagueDriver:
                               team_configs=team_configs, team_weights=team_weights,
                               member_count=member_count, sibling_fraction=sibling_fraction,
                               random_seed=seed, member_reward_configs=member_reward_configs,
-                              spawn_curriculum_enabled=spawn_curriculum_enabled,
-                              spawn_curriculum_ratio=spawn_curriculum_ratio,
-                              spawn_curriculum_prob=spawn_curriculum_prob)
+                              wheel_enabled=wheel_enabled, wheel_drill_time=wheel_drill_time,
+                              wheel_native_time=wheel_native_time,
+                              max_overtime_seconds=max_overtime_seconds)
         cfg = L.LearnerConfig()
         cfg.deviceType = getattr(L.LearnerDeviceType, device)
         cfg.collisionMeshesFolder = os.environ.get(
@@ -266,9 +270,10 @@ def main():
         standardize_returns=bool(raw.get("standardize_returns", False)),
         device=str(raw.get("device", "CPU")),
         member_reward_configs=member_reward_configs,
-        spawn_curriculum_enabled=bool(raw.get("spawn_curriculum_enabled", False)),
-        spawn_curriculum_ratio=float(raw.get("spawn_curriculum_ratio", 1.0)),
-        spawn_curriculum_prob=float(raw.get("spawn_curriculum_prob", 0.5)),
+        wheel_enabled=bool(raw.get("wheel_enabled", False)),
+        wheel_drill_time=float(raw.get("wheel_drill_time", 10.0)),
+        wheel_native_time=float(raw.get("wheel_native_time", 300.0)),
+        max_overtime_seconds=float(raw.get("max_overtime_seconds", 300.0)),
     )
 
     driver.start()
