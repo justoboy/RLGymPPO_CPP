@@ -14,9 +14,9 @@ namespace RLGPC {
 
 			nextStates, dones, truncated, values, advantages,
 
-			// FSP auxiliary: per-step target (entityFeatures wide, the next obs's self-entity
-			// block) + mask (1 when the step is NOT an episode end, else 0). Appended last so the
-			// positional begin()/end() iteration in SubmitExperience/_GetSamples carries them.
+			// FSP auxiliary: per-step target (entityFeatures-5 wide = the next obs's q_self, the self
+			// row's non-IS_* cols) + mask (1 when the step is NOT an episode end, else 0). Appended
+			// last so the positional begin()/end() iteration in SubmitExperience/_GetSamples carries them.
 			fspTarget, fspMask;
 
 		torch::Tensor* begin() { return &states; }

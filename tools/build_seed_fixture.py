@@ -26,13 +26,39 @@ N_CONTROLS = 9
 N_DIMS = 256
 N_HEADS = 8
 N_LAYERS = 4
+_N_MODES = 7
 # Superset layout constants (mirror the reference constants; see convert_bc_checkpoint.spec_to_layout).
+# v2: query = q_self(entity_features - 5, the non-IS_* cols) + tail(161); the mode is a trailing scalar
+# channel feeding mode_emb (NOT a float query column); relative block is 25-wide (zs block dropped).
 _WORLD_FEATURES = 25
 _N_PROFILE_FEATURES = 14
-_QUERY_TAIL = 169
-_RELATIVE_FEATURES = 30
+_QUERY_TAIL = 161
+_RELATIVE_FEATURES = 25
 _MAX_TEAM = 4
 _MAX_BOOST_PADS = 34
+
+
+class ModeAwareEARL(EARLPerceiver):
+    """Library EARLPerceiver + a 7-way mode embedding added to the query embedding (v2).
+
+    Mirrors the reference perceiver: it subclasses the (unmodifiable) library EARLPerceiver, adds
+    self.mode_emb = nn.Embedding(N_MODES, n_dims), and overrides forward to inject the mode into the
+    query embedding. State-dict key = mode_emb.weight (under the earl.* namespace once registered as
+    PerceiverNet.earl), matching the C++ EARLPerceiverImpl.
+    """
+
+    def __init__(self, n_dims, n_layers, n_heads, n_preprocess_layers, query_features, key_value_features):
+        super().__init__(n_dims, n_layers, n_heads, n_preprocess_layers,
+                         query_features=query_features, key_value_features=key_value_features)
+        self.mode_emb = nn.Embedding(_N_MODES, n_dims)
+
+    def forward(self, q, kv, m, mode):
+        q_emb = self.query_preprocess(q)
+        kv_emb = self.key_value_preprocess(kv)
+        q_emb = q_emb + self.mode_emb(mode.reshape(-1).long()).unsqueeze(1)
+        for block in self.blocks:
+            q_emb, _ = block(q_emb, kv_emb, m)
+        return q_emb
 
 
 class ContinuousControlsHead(nn.Module):
@@ -55,17 +81,18 @@ class PerceiverNet(nn.Module):
         self.output = output
         self.chunk_size = chunk_size
 
-    def _forward(self, q, kv, m):
-        res = self.earl(q, kv, m)
+    def _forward(self, q, kv, m, mode):
+        res = self.earl(q, kv, m, mode)
         return self.output(self.relu(res))[:, 0, :]
 
     def forward(self, inp):
-        q, kv, m = inp
+        q, kv, m, mode = inp
         B = q.shape[0]
         if B <= self.chunk_size:
-            return self._forward(q, kv, m)
+            return self._forward(q, kv, m, mode)
         outs = [self._forward(q[i:i + self.chunk_size], kv[i:i + self.chunk_size],
-                             m[i:i + self.chunk_size]) for i in range(0, B, self.chunk_size)]
+                             m[i:i + self.chunk_size], mode[i:i + self.chunk_size])
+                for i in range(0, B, self.chunk_size)]
         return torch.cat(outs, dim=0)
 
 
@@ -84,22 +111,23 @@ def main():
     n_frames = args.n_frames
 
     # Derive widths EXACTLY as convert_bc_checkpoint.spec_to_layout does, so the seeded module shape
-    # matches what the C++ learner projects to for this member.
+    # matches what the C++ learner projects to for this member. v2: query = q_self(ef-5) + tail.
     ef = _WORLD_FEATURES + (_N_PROFILE_FEATURES if profile else 0)
-    query_features = ef + _QUERY_TAIL
+    query_features = (ef - 5) + _QUERY_TAIL
     kv_features = ef + _RELATIVE_FEATURES
     n_tokens = n_frames * (1 + 2 * _MAX_TEAM) + _MAX_BOOST_PADS
 
     torch.manual_seed(1337)
 
     # EARLPerceiver signature is (n_dims, n_layers, n_heads, n_preprocess_layers) — pass layers THEN
-    # heads so the synthetic checkpoint matches the real agent's EARLPerceiver(256, 4, 8, 1).
-    actor_earl = EARLPerceiver(N_DIMS, N_LAYERS, N_HEADS, 1,
+    # heads so the synthetic checkpoint matches the real agent's EARLPerceiver(256, 4, 8, 1). The
+    # mode-aware subclass adds mode_emb (state-dict key earl.mode_emb.weight) and the 4-arg forward.
+    actor_earl = ModeAwareEARL(N_DIMS, N_LAYERS, N_HEADS, 1,
                               query_features=query_features, key_value_features=kv_features)
     actor = PerceiverNet(actor_earl, ContinuousControlsHead())
     actor_state = {("net." + k): v for k, v in actor.state_dict().items()}
 
-    critic_earl = EARLPerceiver(N_DIMS, N_LAYERS, N_HEADS, 1,
+    critic_earl = ModeAwareEARL(N_DIMS, N_LAYERS, N_HEADS, 1,
                               query_features=query_features, key_value_features=kv_features)
     critic = PerceiverNet(critic_earl, nn.Linear(N_DIMS, 1))
     critic_state = dict(critic.state_dict())

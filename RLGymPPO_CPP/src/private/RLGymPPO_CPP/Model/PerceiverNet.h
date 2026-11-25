@@ -4,10 +4,10 @@
 
 // Reference-implementation parity. Module/parameter names match the reference state dicts
 // 1:1 (after the converter strips the actor's "net." prefix):
-//   actor:  earl.*  output.mean.weight output.mean.bias output.log_std
+//   actor:  earl.* (incl. earl.mode_emb.weight)  output.mean.weight output.mean.bias output.log_std
 //   critic: earl.*  output.weight output.bias
-// Forward() takes the FLAT per-player obs (q || kv || m, obsSize wide) and rebuilds the
-// (q, kv, m) tuple internally, so the buffer/trajectory plumbing stays flat.
+// Forward() takes the FLAT per-player obs (q || kv || m || mode, obsSize wide) and rebuilds the
+// (q, kv, m, mode) tuple internally, so the buffer/trajectory plumbing stays flat.
 
 namespace RLGPC {
 	// Continuous head: (B,1,256) -> (B,1,2*nControls) = [mean, log_std].
@@ -50,7 +50,7 @@ namespace RLGPC {
 		CategoricalControlsHead catHead{nullptr};       // actor (disc): output.logits.weight / .bias
 		HeadType headType;
 
-		// Obs layout: flat obs = q(queryFeatures) ++ kv(nTokens*kvFeatures) ++ m(nTokens)
+		// Obs layout: flat obs = q(queryFeatures) ++ kv(nTokens*kvFeatures) ++ m(nTokens) ++ mode(1)
 		int64_t chunkSize;
 		int64_t queryFeatures;
 		int64_t kvFeatures;

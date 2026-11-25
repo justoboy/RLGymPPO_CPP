@@ -27,9 +27,31 @@ import numpy as np
 import torch
 from torch import nn
 
+from earl_pytorch import EARLPerceiver
+
 N_CONTROLS = 9
+_N_MODES = 7
 HALF_LOG_2PI = 0.9189385332046727
 HALF_LOG_2PI_E = 1.4189385332046727
+
+
+class ModeAwareEARL(EARLPerceiver):
+    """Library EARLPerceiver + a 7-way mode embedding added to the query embedding (v2). Mirrors the
+    reference perceiver: subclass adds self.mode_emb = nn.Embedding(N_MODES, n_dims) and overrides
+    forward to inject the mode into the query embedding (state-dict key earl.mode_emb.weight)."""
+
+    def __init__(self, n_dims, n_layers, n_heads, n_preprocess_layers, query_features, key_value_features):
+        super().__init__(n_dims, n_layers, n_heads, n_preprocess_layers,
+                         query_features=query_features, key_value_features=key_value_features)
+        self.mode_emb = nn.Embedding(_N_MODES, n_dims)
+
+    def forward(self, q, kv, m, mode):
+        q_emb = self.query_preprocess(q)
+        kv_emb = self.key_value_preprocess(kv)
+        q_emb = q_emb + self.mode_emb(mode.reshape(-1).long()).unsqueeze(1)
+        for block in self.blocks:
+            q_emb, _ = block(q_emb, kv_emb, m)
+        return q_emb
 
 
 class ContinuousControlsHead(nn.Module):
@@ -52,27 +74,31 @@ class PerceiverNet(nn.Module):
         self.output = output
         self.chunk_size = chunk_size
 
-    def _forward(self, q, kv, m):
-        res = self.earl(q, kv, m)
+    def _forward(self, q, kv, m, mode):
+        res = self.earl(q, kv, m, mode)
         return self.output(self.relu(res))[:, 0, :]
 
     def forward(self, inp):
-        q, kv, m = inp
+        q, kv, m, mode = inp
         B = q.shape[0]
         if B <= self.chunk_size:
-            return self._forward(q, kv, m)
+            return self._forward(q, kv, m, mode)
         outs = [self._forward(q[i:i + self.chunk_size], kv[i:i + self.chunk_size],
-                             m[i:i + self.chunk_size]) for i in range(0, B, self.chunk_size)]
+                             m[i:i + self.chunk_size], mode[i:i + self.chunk_size])
+                for i in range(0, B, self.chunk_size)]
         return torch.cat(outs, dim=0)
 
 
 def flat_to_tuple(flat, query_features, kv_features, n_tokens):
-    """Rebuild (q, kv, m) from a flat obs row EXACTLY as the C++ PerceiverNet::Forward slices."""
+    """Rebuild (q, kv, m, mode) from a flat obs row EXACTLY as the C++ PerceiverNet::Forward slices.
+    v2: mode is the single trailing float column after the mask block; the model casts it to int64."""
     kv_end = query_features + n_tokens * kv_features
+    mask_end = kv_end + n_tokens
     q = flat[:query_features].reshape(1, 1, query_features)
     kv = flat[query_features:kv_end].reshape(1, n_tokens, kv_features)
-    m = flat[kv_end:kv_end + n_tokens].reshape(1, n_tokens)
-    return q, kv, m
+    m = flat[kv_end:mask_end].reshape(1, n_tokens)
+    mode = flat[mask_end:mask_end + 1]
+    return q, kv, m, mode
 
 
 def main():
@@ -81,8 +107,8 @@ def main():
     ap.add_argument("out_folder", help="folder to write fixtures + py_keys.txt / py_grads.bin")
     ap.add_argument("--n", type=int, default=64)
     ap.add_argument("--seed", type=int, default=1337)
-    ap.add_argument("--query-features", type=int, default=208)
-    ap.add_argument("--kv-features", type=int, default=69)
+    ap.add_argument("--query-features", type=int, default=195)
+    ap.add_argument("--kv-features", type=int, default=64)
     ap.add_argument("--n-tokens", type=int, default=151)
     ap.add_argument("--entity-features", type=int, default=39)
     ap.add_argument("--n-controls", type=int, default=N_CONTROLS)
@@ -90,18 +116,17 @@ def main():
     ap.add_argument("--ent-coef", type=float, default=0.01)
     args = ap.parse_args()
 
-    from earl_pytorch import EARLPerceiver
-
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     actor_sd = {k[len("net."):]: v for k, v in ck["actor_state_dict"].items()}
-    actor_earl = EARLPerceiver(256, 4, 8, 1,
+    actor_earl = ModeAwareEARL(256, 4, 8, 1,
                               query_features=args.query_features,
                               key_value_features=args.kv_features)
     net = PerceiverNet(actor_earl, ContinuousControlsHead(256, args.n_controls))
     net.load_state_dict(actor_sd, strict=True)
     net.train()  # grads need grad enabled
 
-    obs_size = args.query_features + args.n_tokens * args.kv_features + args.n_tokens
+    # v2: mode is a trailing scalar channel, so obsSize gains +1 over the q++kv++m width.
+    obs_size = args.query_features + args.n_tokens * args.kv_features + args.n_tokens + 1
     rng = np.random.default_rng(args.seed)
     obs = rng.standard_normal((args.n, obs_size), dtype=np.float32)
     acts = rng.standard_normal((args.n, args.n_controls), dtype=np.float32)
@@ -111,16 +136,17 @@ def main():
     tups = [tuple(torch.from_numpy(c).float() for c in
                  flat_to_tuple(obs[i], args.query_features, args.kv_features, args.n_tokens))
             for i in range(args.n)]
-    # Stack into a batched (B, 1, q) / (B, nTokens, kv) / (B, nTokens) tuple, matching C++ Forward.
+    # Stack into a batched (B,1,q) / (B,nTokens,kv) / (B,nTokens) / (B,1) tuple, matching C++ Forward.
     q = torch.cat([t[0] for t in tups], dim=0)
     kv = torch.cat([t[1] for t in tups], dim=0)
     m = torch.cat([t[2] for t in tups], dim=0)
+    mode = torch.cat([t[3] for t in tups], dim=0)
 
     acts_t = torch.from_numpy(acts)
     oldlp_t = torch.from_numpy(oldlp)
     adv_t = torch.from_numpy(adv)
 
-    out = net((q, kv, m))  # (N, 2*nControls)
+    out = net((q, kv, m, mode))  # (N, 2*nControls)
     mean = out[:, :args.n_controls]
     log_std = out[:, args.n_controls:].clamp(-5.0, 2.0)
     std = torch.exp(log_std).clamp(1e-4, 10.0)

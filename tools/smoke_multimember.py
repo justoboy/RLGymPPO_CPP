@@ -27,14 +27,14 @@ def make_perceiver(ef):
     pc.nHeads = 8
     pc.nLayers = 1
     pc.nControls = 9
-    # The TemporalObsBuilder is hardcoded to the canonical superset layout (P5): query=208,
-    # kv=69, tokens=151, entity=39 (profile-on). The perceiver MUST match the obs builder's emitted
-    # widths exactly, or the policy input layer is sized wrong and reads out of bounds. Both members
-    # share the superset width; the multi-member plumbing is exercised by 2 policies + 2 buffers +
-    # per-episode slotOwners routing, not by width divergence.
+    # The TemporalObsBuilder is hardcoded to the canonical superset layout (P5): query=195,
+    # kv=64, tokens=151, entity=39 (profile-on), plus a trailing mode scalar channel. The perceiver
+    # MUST match the obs builder's emitted widths exactly, or the policy input layer is sized wrong
+    # and reads out of bounds. Both members share the superset width; the multi-member plumbing is
+    # exercised by 2 policies + 2 buffers + per-episode slotOwners routing, not by width divergence.
     pc.entityFeatures = ef  # 39 (profile-on) for both members
-    pc.queryFeatures = 208
-    pc.kvFeatures = 69
+    pc.queryFeatures = 195
+    pc.kvFeatures = 64
     pc.nTokens = 151
     return pc
 
@@ -50,8 +50,8 @@ def main():
     ec.entityFeatures = 39  # superset profile-on builder width
     # EnvFactory::CreateLearner copies these onto the perceiver (overriding make_perceiver's widths),
     # so they MUST match the TemporalObsBuilder's hardcoded superset layout.
-    ec.queryFeatures = 208
-    ec.kvFeatures = 69
+    ec.queryFeatures = 195
+    ec.kvFeatures = 64
     ec.nTokens = 151
     # Per-episode active-set routing: 2 members, every episode a sibling 1v1 (slot 0 -> member 0,
     # slot 1 -> member 1). The env's TeamConfigMutator stamps GameState.slotOwners per reset; the
@@ -87,8 +87,8 @@ def main():
     learner = L.create_learner(ec, cfg)
     print("obs_size:", learner.obs_size)
     print("action_amount:", learner.action_amount)
-    # Superset layout: query(208) + tokens(151)*kv(69) + mask(151) = 10778.
-    assert learner.obs_size == 208 + 151 * 69 + 151, f"unexpected obs_size {learner.obs_size}"
+    # Superset layout: query(195) + tokens(151)*kv(64) + mask(151) + mode(1) = 10011.
+    assert learner.obs_size == 195 + 151 * 64 + 151 + 1, f"unexpected obs_size {learner.obs_size}"
 
     learner.start_agents()
     reports = learner.run_iteration()

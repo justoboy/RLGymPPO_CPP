@@ -35,8 +35,8 @@ def make_perceiver(ef):
     pc.nControls = 9
     # Must match the TemporalObsBuilder's hardcoded superset layout (P5).
     pc.entityFeatures = ef
-    pc.queryFeatures = 208
-    pc.kvFeatures = 69
+    pc.queryFeatures = 195
+    pc.kvFeatures = 64
     pc.nTokens = 151
     return pc
 
@@ -48,8 +48,8 @@ def build_learner(member_count=2, sibling_fraction=1.0, no_touch_secs=1.5, times
     ec.gameMode = L.GameMode.SOCCAR
     ec.nControls = 9
     ec.entityFeatures = 39
-    ec.queryFeatures = 208
-    ec.kvFeatures = 69
+    ec.queryFeatures = 195
+    ec.kvFeatures = 64
     ec.nTokens = 151
     # Short no-touch timeout so an episode actually ENDS within the (small) iteration budget; otherwise
     # no episode completes and the per-owner tallies/reward stay NaN (no completed episode to average).
@@ -101,7 +101,7 @@ def run_league():
     # once per mode (argv[1]) and aggregates the two exit codes.
     print("CWD:", os.getcwd())
     learner = build_learner(member_count=2, sibling_fraction=1.0)
-    assert learner.obs_size == 208 + 151 * 69 + 151, f"unexpected obs_size {learner.obs_size}"
+    assert learner.obs_size == 195 + 151 * 64 + 151 + 1, f"unexpected obs_size {learner.obs_size}"
 
     learner.start_agents()
 

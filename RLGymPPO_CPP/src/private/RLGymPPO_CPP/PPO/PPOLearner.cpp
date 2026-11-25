@@ -60,8 +60,9 @@ RLGPC::PPOLearner::PPOLearner(PPOLearnerConfig _config, Device _device)
 	// When lambdaFSP == 0 the head is never built and fspOptimizer is a no-op (single-bot BC->RL stays
 	// byte-identical to the pre-FSP learner).
 	if (config.lambdaFSP != 0) {
+		// FSP head predicts the self row's NON-IS_* cols (q_self = entityFeatures - 5 wide).
 		fsp = FSPNet(
-			policy->net->earl, config.perceiver.entityFeatures,
+			policy->net->earl, config.perceiver.entityFeatures - 5,
 			config.perceiver.queryFeatures, config.perceiver.kvFeatures,
 			config.perceiver.nTokens, config.perceiver.chunkSize);
 		fsp->to(device, true);
@@ -212,7 +213,7 @@ void RLGPC::PPOLearner::Learn(ExperienceBuffer* expBuffer, Report& report) {
 				// Python's lambda_fsp * fsp_loss / n_minibatches).
 				torch::Tensor fspRaw, fspLoss;
 				if (trainFSP) {
-					auto fspPred = fsp->Forward(obs); // (mb, entityFeatures)
+					auto fspPred = fsp->Forward(obs); // (mb, entityFeatures - 5) == q_self width
 					auto perSample = torch::nn::functional::smooth_l1_loss(
 						fspPred, fspTgt,
 						torch::nn::functional::SmoothL1LossFuncOptions().reduction(torch::kNone)

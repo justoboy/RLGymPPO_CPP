@@ -20,16 +20,18 @@ RLGPC::FSPNetImpl::FSPNetImpl(
 }
 
 torch::Tensor RLGPC::FSPNetImpl::Forward(const torch::Tensor& flatObs) {
-	// flatObs: (B, obsSize) where obsSize = queryFeatures + nTokens*kvFeatures + nTokens.
+	// flatObs: (B, obsSize) where obsSize = queryFeatures + nTokens*kvFeatures + nTokens + 1 (mode).
 	const int64_t B = flatObs.size(0);
 	const int64_t kvEnd = queryFeatures + nTokens * kvFeatures;
+	const int64_t maskEnd = kvEnd + nTokens; // mode is the single column at [maskEnd]
 
 	auto q = flatObs.slice(1, 0, queryFeatures).view({ B, 1, queryFeatures });
 	auto kv = flatObs.slice(1, queryFeatures, kvEnd).view({ B, nTokens, kvFeatures });
-	auto m = flatObs.slice(1, kvEnd, kvEnd + nTokens);
+	auto m = flatObs.slice(1, kvEnd, maskEnd);
+	auto mode = flatObs.slice(1, maskEnd, maskEnd + 1).squeeze(1).to(torch::kLong);
 
 	if (B <= chunkSize) {
-		auto res = earl->forward(q, kv, m);
+		auto res = earl->forward(q, kv, m, mode);
 		res = head->forward(torch::relu(res)); // (B, 1, entityFeatures)
 		return res.slice(1, 0, 1).squeeze(1);  // [:, 0, :] -> (B, entityFeatures)
 	}
@@ -37,7 +39,8 @@ torch::Tensor RLGPC::FSPNetImpl::Forward(const torch::Tensor& flatObs) {
 	std::vector<torch::Tensor> outs;
 	for (int64_t i = 0; i < B; i += chunkSize) {
 		int64_t end = std::min(i + chunkSize, B);
-		auto res = earl->forward(q.slice(0, i, end), kv.slice(0, i, end), m.slice(0, i, end));
+		auto res = earl->forward(q.slice(0, i, end), kv.slice(0, i, end), m.slice(0, i, end),
+			mode.slice(0, i, end));
 		res = head->forward(torch::relu(res));
 		outs.push_back(res.slice(1, 0, 1).squeeze(1));
 	}

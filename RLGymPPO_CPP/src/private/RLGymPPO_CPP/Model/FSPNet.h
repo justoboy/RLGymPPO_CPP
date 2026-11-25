@@ -5,10 +5,10 @@
 // FSP auxiliary head. It shares the SAME EARLPerceiver trunk instance the actor uses (the
 // shared handle is passed in), so the auxiliary gradient flows into the encoder the actor uses.
 // Module/parameter names match the reference fsp_state_dict 1:1:
-//   fsp:  earl.*  head.weight head.bias
-// Forward() takes the FLAT per-player obs (q || kv || m, obsSize wide) and rebuilds the
-// (q, kv, m) tuple internally, chunked along the batch to bound VRAM (exactly like PerceiverNet).
-// Output: (B, entityFeatures) = head(relu(earl(q,kv,m)))[:, 0, :].
+//   fsp:  earl.* (incl. earl.mode_emb.weight)  head.weight head.bias
+// Forward() takes the FLAT per-player obs (q || kv || m || mode, obsSize wide) and rebuilds the
+// (q, kv, m, mode) tuple internally, chunked along the batch to bound VRAM (exactly like
+// PerceiverNet). Output: (B, entityFeatures) = head(relu(earl(q,kv,m,mode)))[:, 0, :].
 
 namespace RLGPC {
 	class FSPNetImpl : public torch::nn::Module {

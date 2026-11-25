@@ -63,7 +63,7 @@ namespace RLGPC {
 			new ScoreboardTimeCondition(ec.maxOvertimeSeconds) // truncate on the per-episode clock cap / overtime
 		};
 
-		// Superset temporal obs builder: emits q(208) ++ kv(151*69) ++ m(151) per agent.
+		// Superset temporal obs builder: emits q(195) ++ kv(151*64) ++ m(151) ++ mode(1) per agent.
 		auto obs = new TemporalObsBuilder();
 		obs->activeMode = ec.gameMode;
 		obs->tickSkip = ec.tickSkip;

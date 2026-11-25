@@ -61,10 +61,16 @@ namespace RLGPC {
 			const torch::Tensor& src, const torch::Tensor& invariant, const torch::Tensor& mask);
 	};
 
+	// Number of game-mode codes the mode embedding covers (mirrors the reference N_MODES).
+	constexpr int N_MODES = 7;
+
 	class EARLPerceiverImpl : public torch::nn::Module {
 	public:
 		torch::nn::Sequential query_preprocess{nullptr}, key_value_preprocess{nullptr};
 		torch::nn::ModuleList blocks{nullptr};
+		// Mode embedding: the game-mode int is looked up here and ADDED to the query embedding (the
+		// mode is no longer a float column in q; this fixes the old ordinal-scalar bug).
+		torch::nn::Embedding mode_emb{nullptr};
 
 		int nDims;
 
@@ -72,7 +78,7 @@ namespace RLGPC {
 
 		torch::Tensor forward(
 			const torch::Tensor& queryEntities, const torch::Tensor& keyValueEntities,
-			const torch::Tensor& mask);
+			const torch::Tensor& mask, const torch::Tensor& mode);
 	};
 
 	TORCH_MODULE(EARLPerceiver);

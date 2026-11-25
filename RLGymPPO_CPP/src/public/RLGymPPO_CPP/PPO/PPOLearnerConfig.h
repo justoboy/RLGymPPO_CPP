@@ -12,10 +12,10 @@ namespace RLGPC {
 
 	// Architecture of the EARL Perceiver actor/critic. The obs layout describes how the
 	// FLAT per-player obs (built by the sim's TemporalObsBuilder) is sliced back into the
-	// (q, kv, mask) tuple the Perceiver consumes:
-	//   flat obs = q(queryFeatures) ++ kv(nTokens * kvFeatures) ++ m(nTokens)
+	// (q, kv, mask, mode) tuple the Perceiver consumes:
+	//   flat obs = q(queryFeatures) ++ kv(nTokens * kvFeatures) ++ m(nTokens) ++ mode(1)
 	// Defaults match the reference main BotSpec (profile=True): entity_features=39,
-	// query_features=208, kv_features=69, 151 temporal slots (13 frames x 11 cars + 34 pads).
+	// query_features=195, kv_features=64, 151 temporal slots (13 frames x 9 ball+cars + 34 pads).
 	struct PerceiverConfig {
 		// NOTE: matches the reference _make_earl == EARLPerceiver(256, 4, 8, 1, ...),
 		// i.e. n_layers=4, n_heads=8 (the plan text had these swapped; the shipped BC
@@ -35,13 +35,13 @@ namespace RLGPC {
 		std::vector<int> nBins = { 9, 9, 3, 9, 3, 2, 2, 2, 2 };
 
 		// Obs tuple layout (must match the sim's TemporalObsBuilder output)
-		int queryFeatures = 208; // entity(39) + direct-ball(12) + tactical(3) + mode(1) + mode-fields(11) + tiles(140) + team-size(2)
-		int kvFeatures = 69;     // entity features (39) + relative block (30)
-		int nTokens = 151;       // temporal slots (13 frames x 11 cars + 34 boost pads)
+		int queryFeatures = 195; // q_self(34, non-IS_* cols) + ball(6) + tactical(3) + mode-fields(10) + tiles(140) + team-size(2)
+		int kvFeatures = 64;     // entity features (39) + relative block (25)
+		int nTokens = 151;       // temporal slots (13 frames x 9 ball+cars + 34 boost pads)
 
-		// FSP auxiliary head output width (the self-entity feature block width the head predicts).
-		// Mirrors the reference BotSpec.entity_features (39 when profile on). The FSP target is the
-		// first entityFeatures columns of the next obs's query block.
+		// FSP auxiliary head: the self row's full feature width (39 when profile on). The FSP head's
+		// output width is entityFeatures - 5 (the q_self, i.e. the self row's non-IS_* cols), which is
+		// also the FSP target (the first entityFeatures-5 columns of the next obs).
 		int entityFeatures = 39;
 
 		int64_t chunkSize = 2048; // PerceiverNet forward chunking (VRAM bound)

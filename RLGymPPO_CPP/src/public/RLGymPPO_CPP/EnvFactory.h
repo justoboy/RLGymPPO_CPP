@@ -86,8 +86,8 @@ namespace RLGPC {
 		GameMode gameMode = GameMode::SOCCAR;
 
 		// Perceiver obs layout must match TemporalObsBuilder's output for this config.
-		int queryFeatures = 208;
-		int kvFeatures = 69;
+		int queryFeatures = 195;
+		int kvFeatures = 64;
 		int nTokens = 151;
 		int nControls = 9;
 		int entityFeatures = 39;

@@ -85,20 +85,27 @@ namespace RLGPC {
 
 		// Column gather from the superset flat obs to an owner with entity features `ef`. Returns an
 		// undefined tensor when ef == supEf (identity: caller must skip the gather).
+		// Superset flat obs = q(supQ) ++ kv(supTokens*supKv) ++ m(supTokens) ++ mode(1), where the
+		// superset q = [q_self(supEf-5) ++ tail]. Owner's q = [q_self(ef-5) ++ tail]; owner's kv token
+		// = [entity(ef) ++ rel(25)]; mask unchanged; mode = the single trailing column.
 		torch::Tensor BuildColIdx(int ef) {
 			if (ef == supEf)
 				return torch::Tensor();
 
+			const int supQSelf = supEf - 5; // superset q_self width (tail starts here)
 			std::vector<int64_t> idx;
-			for (int c = 0; c < ef; c++) idx.push_back(c);
-			for (int c = supEf; c < supQ; c++) idx.push_back(c);
+			// owner's q_self = superset columns [5, ef) (the non-IS_* self cols)
+			for (int c = 5; c < ef; c++) idx.push_back(c);
+			// shared tail (identical for every owner): superset columns [supQSelf, supQ)
+			for (int c = supQSelf; c < supQ; c++) idx.push_back(c);
 			for (int t = 0; t < supTokens; t++) {
 				int64_t base = (int64_t)supQ + (int64_t)t * supKv;
-				for (int c = 0; c < ef; c++) idx.push_back(base + c);
-				for (int c = supEf; c < supKv; c++) idx.push_back(base + c);
+				for (int c = 0; c < ef; c++) idx.push_back(base + c);       // owner's entity block (IS_* kept)
+				for (int c = supEf; c < supKv; c++) idx.push_back(base + c); // relative block (25)
 			}
 			int64_t maskBase = (int64_t)supQ + (int64_t)supTokens * supKv;
 			for (int t = 0; t < supTokens; t++) idx.push_back(maskBase + t);
+			idx.push_back(maskBase + supTokens); // mode (trailing scalar channel)
 
 			return torch::from_blob(idx.data(), { (int64_t)idx.size() }, torch::TensorOptions().dtype(torch::kLong)).clone();
 		}

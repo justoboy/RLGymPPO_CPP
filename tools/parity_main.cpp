@@ -93,11 +93,13 @@ int main(int argc, char** argv) {
 	}
 
 	// FSP auxiliary head path (optional). The FSP net builds its OWN earl trunk (the runtime
-	// "shared trunk" optimization is irrelevant to per-tensor forward parity).
+	// "shared trunk" optimization is irrelevant to per-tensor forward parity). v2: the FSP head
+	// predicts the self row's NON-IS_* cols, i.e. out_features = entityFeatures - 5 (q_self width).
 	if (fspEnabled) {
+		const int64_t qSelf = entityFeatures - 5;
 		FSPNet fsp(
 			EARLPerceiver(256, 8, 4, queryFeatures, kvFeatures),
-			entityFeatures, queryFeatures, kvFeatures, nTokens, 100000);
+			qSelf, queryFeatures, kvFeatures, nTokens, 100000);
 		try {
 			ApplyStateDict(*fsp.ptr(), LoadStateDict(weightsFolder + "/PPO_FSP.lt"));
 		} catch (const std::exception& e) {
@@ -105,22 +107,22 @@ int main(int argc, char** argv) {
 			return 5;
 		}
 
-		auto pyFsp = readFloats(dataFolder + "/py_fsp.bin", (size_t)(N * entityFeatures));
+		auto pyFsp = readFloats(dataFolder + "/py_fsp.bin", (size_t)(N * qSelf));
 		torch::Tensor cppFsp;
 		try {
-			cppFsp = fsp->Forward(obsTensor).to(torch::kFloat32); // (N, entityFeatures)
+			cppFsp = fsp->Forward(obsTensor).to(torch::kFloat32); // (N, entityFeatures - 5)
 		} catch (const std::exception& e) {
 			std::fprintf(stderr, "fsp forward failed: %s\n", e.what());
 			return 6;
 		}
 
-		auto pyFspT = torch::from_blob(pyFsp.data(), { N, entityFeatures },
+		auto pyFspT = torch::from_blob(pyFsp.data(), { N, qSelf },
 			torch::TensorOptions().dtype(torch::kFloat32)).clone();
 		auto fspDelta = (cppFsp - pyFspT).abs();
 		float fspMax = fspDelta.max().item<float>();
 		float fspMean = fspDelta.mean().item<float>();
-		std::printf("fsp parity rows=%lld entityFeatures=%lld max|delta|=%.3e mean|delta|=%.3e\n",
-			(long long)N, (long long)entityFeatures, fspMax, fspMean);
+		std::printf("fsp parity rows=%lld qSelf=%lld max|delta|=%.3e mean|delta|=%.3e\n",
+			(long long)N, (long long)qSelf, fspMax, fspMean);
 		if (!(fspMax < 1e-4f)) {
 			std::fprintf(stderr, "FSP PARITY FAIL: max|delta|=%.3e >= 1e-4\n", fspMax);
 			return 1;

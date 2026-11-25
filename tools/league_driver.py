@@ -24,9 +24,10 @@ import os
 import subprocess
 import sys
 
-# Native fallback layout (used only when a checkpoint carries no recorded spec, e.g. the synthetic
-# smoke fixture). Mirrors build_seed_fixture.py + TemporalObsBuilder defaults.
-NATIVE = dict(entity_features=30, query_features=59, kv_features=30, n_tokens=559,
+# Native fallback layout (used only when a checkpoint carries no recorded spec). Mirrors the canonical
+# superset layout the hardcoded TemporalObsBuilder emits (profile-on): q_self(34)+ball(6)+tail(155)=195,
+# kv=entity(39)+relative(25)=64, tokens=13*9+34=151, plus a trailing mode scalar channel.
+NATIVE = dict(entity_features=39, query_features=195, kv_features=64, n_tokens=151,
               n_controls=9, head="continuous")
 
 # Reference-venv (py3.14) interpreter that has earl_pytorch. Set this in your environment; there is

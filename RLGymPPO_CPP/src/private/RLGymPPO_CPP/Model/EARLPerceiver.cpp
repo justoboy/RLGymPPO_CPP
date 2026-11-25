@@ -123,6 +123,11 @@ RLGPC::EARLPerceiverImpl::EARLPerceiverImpl(
 		torch::nn::Linear(torch::nn::LinearOptions(keyValueFeatures, nDims)), torch::nn::ReLU(),
 		torch::nn::Linear(torch::nn::LinearOptions(nDims, nDims)), torch::nn::ReLU()));
 
+	// Mode embedding (N_MODES, nDims); looked up on the trailing mode int and added to the query
+	// embedding. State-dict key = mode_emb.weight, mirroring the reference EARLPerceiver attribute.
+	mode_emb = register_module("mode_emb",
+		torch::nn::Embedding(torch::nn::EmbeddingOptions(N_MODES, nDims)));
+
 	blocks = register_module("blocks", torch::nn::ModuleList());
 	for (int i = 0; i < nLayers; i++)
 		blocks->push_back(EARLPerceiverBlock(nDims, nHeads));
@@ -130,9 +135,12 @@ RLGPC::EARLPerceiverImpl::EARLPerceiverImpl(
 
 torch::Tensor RLGPC::EARLPerceiverImpl::forward(
 	const torch::Tensor& queryEntities, const torch::Tensor& keyValueEntities,
-	const torch::Tensor& mask) {
+	const torch::Tensor& mask, const torch::Tensor& mode) {
 	auto qEmb = query_preprocess->forward(queryEntities);
 	auto kvEmb = key_value_preprocess->forward(keyValueEntities);
+
+	// Python: q_emb = q_emb + mode_emb(mode).unsqueeze(1)  (mode is (B,) int64 -> (B,nDims) -> (B,1,nDims))
+	qEmb = qEmb + mode_emb->forward(mode).unsqueeze(1);
 
 	// Python: for block in self.blocks: q_emb, _ = block(q_emb, kv_emb, mask=mask)
 	for (auto& child : blocks->children())

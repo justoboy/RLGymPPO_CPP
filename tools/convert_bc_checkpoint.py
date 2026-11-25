@@ -65,12 +65,14 @@ def _write_blob(path: str, state_dict: dict) -> None:
 # --- spec -> C++ PerceiverConfig width derivation ---------------------------------------------
 # Mirrors the reference bot_spec + constants so the (py3.9) driver can build a matching
 # PerceiverConfig WITHOUT importing the reference impl (earl_pytorch is py3.14-only). These literals
-# MUST stay in sync with the reference constants: WORLD_FEATURES=25, N_PROFILE_FEATURES=14, QUERY_TAIL=169,
-# RELATIVE_FEATURES=30, MAX_TEAM=4 (=> 2*MAX_TEAM=8 car slots), MAX_BOOST_PADS=34, N_TEMPORAL_FRAMES=13.
+# MUST stay in sync with the reference constants: WORLD_FEATURES=25, N_PROFILE_FEATURES=14, QUERY_TAIL=161,
+# RELATIVE_FEATURES=25, MAX_TEAM=4 (=> 2*MAX_TEAM=8 car slots), MAX_BOOST_PADS=34, N_TEMPORAL_FRAMES=13.
+# v2: query = q_self(entity_features - 5, the non-IS_* cols) + tail(161: ball6+tactical3+mode-fields10+
+# tiles140+team2); the mode is a trailing scalar channel, not a query column.
 _WORLD_FEATURES = 25
 _N_PROFILE_FEATURES = 14
-_QUERY_TAIL = 169
-_RELATIVE_FEATURES = 30
+_QUERY_TAIL = 161
+_RELATIVE_FEATURES = 25
 _MAX_TEAM = 4
 _MAX_BOOST_PADS = 34
 _N_CONTROLS = 9
@@ -80,8 +82,8 @@ def spec_to_layout(spec_dict: dict) -> dict:
     """Derive the C++ PerceiverConfig widths from a checkpoint's recorded BotSpec dict.
 
     entity_features = 25 + (14 if profile else 0)
-    query_features  = entity_features + QUERY_TAIL(169)
-    kv_features     = entity_features + RELATIVE_FEATURES(30)
+    query_features  = (entity_features - 5) + QUERY_TAIL(161)   # q_self (non-IS_*) + tail
+    kv_features     = entity_features + RELATIVE_FEATURES(25)
     n_tokens        = n_frames * (1 + 2*MAX_TEAM) + MAX_BOOST_PADS  (13*9 + 34 = 151)
     head_type       = 'continuous' | 'discrete' (from spec.head)
     """
@@ -90,7 +92,7 @@ def spec_to_layout(spec_dict: dict) -> dict:
     ef = _WORLD_FEATURES + (_N_PROFILE_FEATURES if profile else 0)
     return {
         "entity_features": ef,
-        "query_features": ef + _QUERY_TAIL,
+        "query_features": (ef - 5) + _QUERY_TAIL,
         "kv_features": ef + _RELATIVE_FEATURES,
         "n_tokens": n_frames * (1 + 2 * _MAX_TEAM) + _MAX_BOOST_PADS,
         "n_controls": _N_CONTROLS,

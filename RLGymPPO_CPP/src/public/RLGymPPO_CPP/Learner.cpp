@@ -145,15 +145,16 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 		memberSpecs = config.memberPerceiver;
 
 	// The superset (widest) member layout must match the actual flat obs width from the env.
+	// Flat obs = q(queryFeatures) ++ kv(nTokens*kvFeatures) ++ m(nTokens) ++ mode(1).
 	{
 		PerceiverConfig sup = memberSpecs[0];
 		for (auto& ms : memberSpecs)
 			sup = (ms.entityFeatures > sup.entityFeatures) ? ms : sup;
-		if (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens != (int)obsSize)
+		if (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens + 1 != (int)obsSize)
 			RG_ERR_CLOSE(
 				"Learner: superset PerceiverConfig obs layout (" << sup.queryFeatures << " + "
-				<< sup.nTokens << "*" << sup.kvFeatures << " + " << sup.nTokens << " = "
-				<< (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens)
+				<< sup.nTokens << "*" << sup.kvFeatures << " + " << sup.nTokens << " + 1 = "
+				<< (sup.queryFeatures + sup.nTokens * sup.kvFeatures + sup.nTokens + 1)
 				<< ") does not match env obs size " << obsSize << "; fix LearnerConfig member perceiver"
 			);
 		if (sup.nControls != actionAmount)
@@ -786,15 +787,16 @@ void RLGPC::Learner::AddNewExperience(GameTrajectory& gameTraj, int member, Repo
 		returnStats[member].Increment(returns, numToIncrement);
 	}
 
-	// FSP auxiliary: target = the next obs's self-entity feature block (first entityFeatures columns
-	// of the flat next obs, which is exactly the query block's self-entity slice). mask = 1 when the
-	// step is NOT an episode end (so the FSP loss skips steps with no valid next frame). When an
-	// episode ends the target is masked out, so its (arbitrary) value is irrelevant. Mirrors
-	// rollout.py: target = new_o[a][0][0, 0, :ef], mask = 0 at term/trunc else 1.
+	// FSP auxiliary: target = the next obs's q_self (the self row's NON-IS_* cols, the first
+	// entityFeatures-5 columns of the flat next obs; the self row's IS_* one-hot is constant
+	// [1,0,0,0,0] so q_self carries all the non-constant self features). mask = 1 when the step is
+	// NOT an episode end (so the FSP loss skips steps with no valid next frame). When an episode ends
+	// the target is masked out, so its (arbitrary) value is irrelevant. Mirrors rollout.py:
+	// target = new_o[a][0][0, 0, :ef-5], mask = 0 at term/trunc else 1.
 	torch::Tensor fspTarget, fspMask;
 	if (ppo->config.lambdaFSP != 0) {
-		int ef = ppo->config.perceiver.entityFeatures;
-		fspTarget = trajData.nextStates.slice(1, 0, ef);
+		int qSelf = ppo->config.perceiver.entityFeatures - 5;
+		fspTarget = trajData.nextStates.slice(1, 0, qSelf);
 		fspMask = (1 - trajData.dones) * (1 - trajData.truncateds);
 	}
 
