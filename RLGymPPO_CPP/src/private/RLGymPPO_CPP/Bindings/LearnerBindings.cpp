@@ -206,8 +206,10 @@ PYBIND11_MODULE(rlgym_learner, m) {
 			py::arg("touch_enabled"), py::arg("touch_d"), py::arg("touch_prob"),
 			py::arg("goal_enabled"), py::arg("goal_ball_y"), py::arg("goal_prob"),
 			py::arg("drill_time"), py::arg("native_time"),
-			"Write the two-wheel curriculum config (per-wheel enabled/geometry/prob + per-episode clock cap) "
-			"onto every live env. The driver advances each wheel's state machine per epoch and calls this.")
+			py::arg("phase1_active") = false, py::arg("duel_time") = -1.0f,
+			"Write the two-wheel curriculum config (per-wheel enabled/geometry/prob + per-episode clock cap "
+			"+ phase-1 1v0 flag + phase-2 duel clock cap) onto every live env. The driver advances each "
+			"wheel's state machine per epoch and calls this.")
 		.def("set_member_reward", [](Learner& l, int member, const std::map<std::string, float>& termWeights,
 		                            float teamSpirit, float opponentPunish) {
 			std::vector<std::pair<std::string, float>> tw(termWeights.begin(), termWeights.end());

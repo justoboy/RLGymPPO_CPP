@@ -79,11 +79,14 @@ namespace RLGPC {
 	// SetWheelConfig writes every live game's WheelHolder: touchEnabled/goalEnabled gate each wheel (OFF =>
 	// that drill never fires); touchD/touchProb drive the touch wheel (car->ball distance + per-episode fire
 	// prob); goalBallY/goalProb drive the goal wheel (ball |y| on the lone car's attack axis + fire prob);
-	// drillTime/nativeTime set the per-episode clock cap. The driver advances each wheel's state machine per
-	// epoch and calls this once per epoch with the current per-wheel geometry + probability.
+	// drillTime/nativeTime set the per-episode clock cap. phase1Active marks the 1v0 phase-1 curriculum (the
+	// mutator forces a 1v0 lineup + GATE fallback whenever true); duelTime is the phase-2 1v1 duel clock cap
+	// (>=0 => native 1v1 kickoff that HARD-finishes there with no OT; <0 => unset native full match). The
+	// driver advances each wheel's state machine per epoch and calls this once per epoch.
 	void SetWheelConfig(bool touchEnabled, float touchD, float touchProb,
 	                    bool goalEnabled, float goalBallY, float goalProb,
-	                    float drillTime, float nativeTime);
+	                    float drillTime, float nativeTime,
+	                    bool phase1Active = false, float duelTime = -1.0f);
 	void SetMemberReward(int member, const std::vector<std::pair<std::string, float>>& termWeights,
 	                     float teamSpirit, float opponentPunish);
 

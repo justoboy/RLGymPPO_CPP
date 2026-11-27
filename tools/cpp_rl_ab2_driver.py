@@ -2,31 +2,40 @@
 
 Runs under anaconda 3.9 (it imports the cp39 rlgym_learner .pyd). ONE invocation trains ONE (arm, seed)
 run: a single-member learner (every slot owned by member 0 = self-play) whose head type + init come from
-the job, driven through the SAME two-wheel (touch + goal) spawn curriculum as the Python reference
-train_rl_ab2.py. Each wheel is an INDEPENDENT state machine the driver advances per EPOCH:
+the job, driven through the SAME THREE-WHEEL (touch + goal + duel) spawn curriculum as the reference
+implementation's train_rl_ab2.py. Each wheel is an INDEPENDENT state machine the driver advances per EPOCH
+(FADE-FIRST-THEN-GATE -- never ask for native competence before the bot has been faded INTO native):
 
-    ACQUIRING: streak = streak+1 if metric >= x else 0;  streak >= y  -> FADE, score = 0
-    FADE:      score = clamp(score + (1 if metric >= x else -2), 0, z); score >= z -> wheel OFF
-    g = score / z   (0 in ACQUIRING, climbs 0->1 through FADE)
+    FADE: score = clamp(score + (metric >= x ? +2 : -3), 0, z); score >= z -> GATE (streak = 0)
+          The penalty (-3) EXCEEDS the reward (+2): the walk climbs only above the ~60% break-even, so a
+          lucky epoch cannot carry a wheel forward (this kills the old +1/-2 limit cycle).
+    GATE: streak = streak+1 if metric >= x else 0; streak >= y -> OFF
+          The wheel's own drill is FULLY SUPPRESSED during GATE, so the metric is measured on the native
+          fallback episode; y consecutive native epochs meeting x proves real competence before retirement.
+    g = score / z is the wheel's fade fraction (drill probability p = floor + (1-floor)*(1-g)).
 
-    touch drill geometry: car at d = 400 + 3600*g_touch from a center ball (g=0 -> ball on car)
-    goal  drill geometry: ball at +5120*(1-g_goal) on the lone BLUE car's +y attack axis (g=0 -> easy goal)
-    per-wheel fire prob:  p = prob_floor + (1-prob_floor)*(1-g)   (g=0 -> p=1 always drill; g=1 -> floor)
+    touch drill geometry: 1v0 -- ball at center, lone car at d = 400 + 3600*g_touch facing it.
+    goal  drill geometry: 1v0 breakaway -- lone car behind a ball on its +y attack axis at
+                          |y| = 5120*(1-g_goal) (opponent absent = uncontested finish).
+    GATE fallback:        the hardest 1v0 -- ball at center, lone car parked at kickoff distance on its
+                          attack axis, drill-active so a goal respawns (the episode the GATE measures on).
+    duel  wheel (phase 2): LOCKED until touch+goal retire, then native 1v1 kickoff under DUEL_REWARD with
+                          the clock capped at kickoff_time (hard-finish, no OT); metric = goals_for_mean
+                          (a goal requires a touch, so goals subsumes touches).
 
-The C++ learner auto-resets each game internally, so the per-episode drill Bernoulli lives in the mutator;
-the driver only advances each wheel per EPOCH and pushes the resulting geometry + probability + clock caps
-via set_wheel_config(). The metric feeding each wheel is the plain ALL-episode mixed mean (touches_for_mean
-for touch, goals_for_mean for goal) — no drill-only gating; the probability floor bounds the dilution.
-
-Reward is a STEP, not a blend: while either wheel is active the env uses the fixed boosted phase-1 set; once
-BOTH wheels are OFF it steps to the DEFAULT set (win_prob arrives). No linear reward blend.
+THREE-PHASE REWARD (a STEP, never a blend): PHASE 1 (touch or goal wheel not OFF) -> PHASE1_REWARD;
+PHASE 2 (both retired, duel not OFF) -> DUEL_REWARD; PHASE 3 (all OFF) -> DEFAULT_REWARD. The C++ mutator
+forces the 1v0 lineup + GATE fallback whenever phase1_active, so the driver only writes per-wheel enabled
+(= FADING), geometry, fire-probability, the phase1_active flag, and the duel clock cap via set_wheel_config.
+GOAL-FIRST PRECEDENCE (both drills would fire -> the 1v0 goal drill wins) lives in the mutator.
 
 The job JSON (written by the reference implementation's bridge) carries everything: the BC .pt to convert
-(or null for the random arm), the phase-1 + default reward maps, the per-wheel x/y/z + prob_floor + drill_time
-/ native_time, and out_path where the per-run curve + resumable wheel state is persisted. RESUME: if
-<out_path>.state.json exists, both wheel states + done_epochs + curve are restored and the learner Load()s
-its weights from load_dir (no re-seed). Layout comes from the converted spec.json (BC arms) or the job's
-explicit layout (random arm).
+(or null for the random arm), the phase-1 + duel + default reward maps, the per-wheel x/y/z + prob_floor +
+drill_time / native_time (+ optional kickoff_time, default 30s), and out_path where the per-run curve +
+resumable wheel state is persisted. RESUME: if <out_path>.state.json exists, all three wheel states +
+done_epochs + curve are restored (with migration: a missing duel wheel is added LOCKED, or FADE when
+touch+goal already retired; any legacy ACQUIRING becomes FADE) and the learner Load()s its weights from
+load_dir (no re-seed). Layout comes from the converted spec.json (BC arms) or the job's explicit layout.
 """
 import json
 import os
@@ -44,6 +53,8 @@ TOUCH_MIN_DIST = 400.0
 TOUCH_MAX_DIST = 4000.0
 # Goal-drill ball |y| at full difficulty (g=0 -> ball at the goal mouth = easiest, g=1 -> center = hardest).
 GOAL_MAX_Y = 5120.0
+# Phase-2 duel clock cap (s) when the job omits kickoff_time (the reference's default).
+DEFAULT_KICKOFF_TIME = 30.0
 
 
 def split_reward(rmap):
@@ -56,33 +67,35 @@ def split_reward(rmap):
 
 
 def advance_wheel(w, metric):
-    """Advance one wheel's state machine by one epoch given its mixed-mean metric. Returns the new wheel dict
-    {state, streak, score}. ACQUIRING -> FADE on streak>=y; FADE -> OFF on score>=z."""
+    """Advance one wheel's state machine by one epoch given its epoch-mean metric (FADE-FIRST-THEN-GATE).
+    FADE: score = clamp(score + (+2 if metric >= x else -3), 0, z); score >= z -> GATE (streak = 0).
+    GATE: streak = streak+1 if metric >= x else 0; streak >= y -> OFF. No-op once OFF or LOCKED."""
     state = w["state"]
-    if state == "OFF":
+    if state in ("OFF", "LOCKED"):
         return w
     hit = metric >= w["x"]
-    if state == "ACQUIRING":
-        streak = w["streak"] + 1 if hit else 0
-        if streak >= w["y"]:
-            return {"state": "FADE", "streak": 0, "score": 0.0,
+    if state == "FADE":
+        score = max(0.0, min(float(w["z"]), w["score"] + (2.0 if hit else -3.0)))
+        if score >= w["z"]:
+            return {"state": "GATE", "streak": 0, "score": float(w["z"]),
                     "x": w["x"], "y": w["y"], "z": w["z"]}
-        return {"state": "ACQUIRING", "streak": streak, "score": 0.0,
+        return {"state": "FADE", "streak": 0, "score": score,
                 "x": w["x"], "y": w["y"], "z": w["z"]}
-    # FADE
-    score = max(0.0, min(float(w["z"]), w["score"] + (1.0 if hit else -2.0)))
-    if score >= w["z"]:
-        return {"state": "OFF", "streak": 0, "score": float(w["z"]),
+    # GATE: the wheel's drill is suppressed (the mutator measures on the native fallback episode).
+    streak = w["streak"] + 1 if hit else 0
+    if streak >= w["y"]:
+        return {"state": "OFF", "streak": 0, "score": w["score"],
                 "x": w["x"], "y": w["y"], "z": w["z"]}
-    return {"state": "FADE", "streak": 0, "score": score,
+    return {"state": "GATE", "streak": streak, "score": w["score"],
             "x": w["x"], "y": w["y"], "z": w["z"]}
 
 
 def wheel_geometry(w):
-    """(enabled, g) for a wheel: enabled = not OFF; g = score/z (0 in ACQUIRING, climbs through FADE)."""
-    enabled = w["state"] != "OFF"
+    """(firing, g) for a wheel: firing = the drill may spawn (FADE only; GATE/OFF suppress it);
+    g = score/z is the fade fraction (geometry eases from easy at g=0 to hard at g=1)."""
+    firing = w["state"] == "FADE"
     g = (w["score"] / w["z"]) if w["z"] > 0 else 0.0
-    return enabled, g
+    return firing, g
 
 
 def fire_prob(g, prob_floor):
@@ -90,9 +103,21 @@ def fire_prob(g, prob_floor):
     return prob_floor + (1.0 - prob_floor) * (1.0 - g)
 
 
+def phase_reward(wheels, job):
+    """Three-phase reward program (a STEP, no blending): PHASE1 while touch or goal is not OFF; DUEL once
+    both retire while the duel wheel is not OFF; DEFAULT when all three are OFF. A job without duel_reward
+    (older bridge) falls back to default_reward so phase 2 still runs, just unscaffolded."""
+    if wheels["touch"]["state"] != "OFF" or wheels["goal"]["state"] != "OFF":
+        return dict(job["phase1_reward"])
+    if wheels["duel"]["state"] != "OFF":
+        return dict(job.get("duel_reward") or job["default_reward"])
+    return dict(job["default_reward"])
+
+
 def build_learner(L, job, layout):
     """Single-member learner (every slot owned by member 0 = self-play). head from job.head / layout."""
-    init_terms, init_ts, init_op = split_reward(job["phase1_reward"])
+    init_rmap = job["phase1_reward"] if bool(job.get("curriculum", True)) else job["default_reward"]
+    init_terms, init_ts, init_op = split_reward(init_rmap)
     mrc = L.MemberRewardConfig()
     mrc.termWeights = [(str(k), float(v)) for k, v in init_terms.items()]
     mrc.teamSpirit = float(init_ts)
@@ -109,9 +134,9 @@ def build_learner(L, job, layout):
         wheel_native_time=float(job["native_time"]),
         max_overtime_seconds=float(job["max_overtime_seconds"]),
         # Native matches run the full native_time + OT (kickoff respawn on goal, no no-touch truncation),
-        # matching the python reference's rl_ab2 behavior (10s drills, native matches to the clock). This is
-        # also what lets the profile tracker accumulate multi-goal history. Drill episodes still cap at
-        # drill_time via the drillActive path.
+        # matching the reference's rl_ab2 behavior (10s drills, native matches to the clock). This is also
+        # what lets the profile tracker accumulate multi-goal history. Drill episodes still cap at
+        # drill_time via the drillActive path; the phase-2 duel caps at duel_time via hardFinish.
         full_match=bool(job.get("full_match", True)))
 
     pc = build_perceiver(L, layout)
@@ -138,6 +163,10 @@ def build_learner(L, job, layout):
     cfg.ppo.lambdaFSP = float(job["lambda_fsp"])
     cfg.memberPerceiver = [pc]
     return L.create_learner(ec, cfg)
+
+
+def _new_wheel(state, x, y, z):
+    return {"state": state, "streak": 0, "score": 0.0, "x": float(x), "y": int(y), "z": float(z)}
 
 
 def main():
@@ -176,6 +205,8 @@ def main():
     prob_floor = float(job["prob_floor"])
     drill_time = float(job["drill_time"])
     native_time = float(job["native_time"])
+    # The bridge may omit kickoff_time (older jobs); default to the reference's 30s duel cap.
+    kickoff_time = float(job.get("kickoff_time", DEFAULT_KICKOFF_TIME))
 
     if resuming:
         with open(state_path, "r", encoding="utf-8") as f:
@@ -184,32 +215,59 @@ def main():
         goal = st["goal"]
         done = int(st["done_epochs"])
         curve = list(st["curve"])
+        # Migration from pre-duel checkpoints: the phase-2 duel wheel didn't exist yet. If touch+goal
+        # already retired (the run had reached native play), start the duel FADE so it re-scaffolds;
+        # otherwise LOCKED (it unlocks naturally when touch+goal retire).
+        if "duel" not in st:
+            retired = touch["state"] == "OFF" and goal["state"] == "OFF"
+            duel = _new_wheel("FADE" if retired else "LOCKED",
+                              job.get("x_duel", 1.0), job.get("y_duel", 5), job.get("z_duel", 5))
+        else:
+            duel = st["duel"]
+        # Migration from the old ACQUIRING->FADE->OFF machine: ACQUIRING no longer exists (wheels now
+        # start in FADE). Any persisted ACQUIRING becomes FADE so the run continues under the new walk.
+        for w in (touch, goal, duel):
+            if w["state"] == "ACQUIRING":
+                w["state"] = "FADE"
         print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] resumed at epoch {done}/{epochs} "
-              f"(touch={touch['state']} goal={goal['state']})", flush=True)
+              f"(touch={touch['state']} goal={goal['state']} duel={duel['state']})", flush=True)
     else:
-        # curriculum off => both wheels start OFF (native kickoff + DEFAULT_REWARD, no drill ever fires);
-        # curriculum on => both wheels start ACQUIRING (the two-wheel curriculum is active from epoch 0).
-        init_state = "ACQUIRING" if bool(job.get("curriculum", True)) else "OFF"
-        touch = {"state": init_state, "streak": 0, "score": 0.0,
-                 "x": float(job["x_touch"]), "y": int(job["y_touch"]), "z": float(job["z_touch"])}
-        goal = {"state": init_state, "streak": 0, "score": 0.0,
-                "x": float(job["x_goal"]), "y": int(job["y_goal"]), "z": float(job["z_goal"])}
+        # curriculum off => all three wheels OFF (native kickoff + DEFAULT_REWARD, no drill ever fires);
+        # curriculum on => touch+goal start FADE (PHASE1_REWARD + easy drill), duel LOCKED (it only
+        # activates once touch+goal retire).
+        if bool(job.get("curriculum", True)):
+            touch = _new_wheel("FADE", job["x_touch"], job["y_touch"], job["z_touch"])
+            goal = _new_wheel("FADE", job["x_goal"], job["y_goal"], job["z_goal"])
+            duel = _new_wheel("LOCKED", job.get("x_duel", 1.0),
+                              job.get("y_duel", 5), job.get("z_duel", 5))
+        else:
+            touch = _new_wheel("OFF", job["x_touch"], job["y_touch"], job["z_touch"])
+            goal = _new_wheel("OFF", job["x_goal"], job["y_goal"], job["z_goal"])
+            duel = _new_wheel("OFF", job.get("x_duel", 1.0),
+                              job.get("y_duel", 5), job.get("z_duel", 5))
         done = 0
         curve = []
 
     try:
         for it in range(done, epochs):
-            # Push the current wheel geometry + fire-probability onto the live envs BEFORE collecting.
-            t_en, g_t = wheel_geometry(touch)
-            g_en, g_g = wheel_geometry(goal)
+            wheels = {"touch": touch, "goal": goal, "duel": duel}
+            # Push the current phase + wheel geometry + fire-probability onto the live envs BEFORE
+            # collecting. phase1 (touch or goal not OFF) => 1v0 curriculum: each FADING wheel's drill may
+            # fire (GATE/OFF suppressed), and when neither fires the mutator uses the 1v0 GATE fallback.
+            # phase2 => native 1v1 kickoff capped at kickoff_time (hard-finish, no OT). phase3 => native
+            # full match. The mutator rolls the per-episode Bernoulli + applies goal-first precedence.
+            phase1 = touch["state"] != "OFF" or goal["state"] != "OFF"
+            t_fire, g_t = wheel_geometry(touch)
+            g_fire, g_g = wheel_geometry(goal)
+            duel_active = duel["state"] != "OFF"
             learner.set_wheel_config(
-                t_en, TOUCH_MIN_DIST + (TOUCH_MAX_DIST - TOUCH_MIN_DIST) * g_t, fire_prob(g_t, prob_floor),
-                g_en, GOAL_MAX_Y * (1.0 - g_g), fire_prob(g_g, prob_floor),
-                drill_time, native_time)
-            # Reward steps (no blend): boosted phase-1 while either wheel active, default once both OFF.
-            rmap = job["default_reward"] if (touch["state"] == "OFF" and goal["state"] == "OFF") \
-                else job["phase1_reward"]
-            terms, ts, op = split_reward(rmap)
+                t_fire, TOUCH_MIN_DIST + (TOUCH_MAX_DIST - TOUCH_MIN_DIST) * g_t,
+                fire_prob(g_t, prob_floor),
+                g_fire, GOAL_MAX_Y * (1.0 - g_g), fire_prob(g_g, prob_floor),
+                drill_time, native_time,
+                phase1, (kickoff_time if (duel_active and not phase1) else -1.0))
+            # Reward steps (no blend): PHASE1 boosted dense set, PHASE2 duel scaffold, PHASE3 default.
+            terms, ts, op = split_reward(phase_reward(wheels, job))
             learner.set_member_reward(0, terms, ts, op)
 
             reports = learner.run_iteration()
@@ -219,17 +277,34 @@ def main():
             er = float(d.get("Average Episode Reward", float("nan")))
             curve.append({"epoch": it, "ep_reward_mean": er, "goals_for_mean": goals_mean,
                           "touches_for_mean": touch_mean,
-                          "touch_state": touch["state"], "goal_state": goal["state"]})
+                          "touch_state": touch["state"], "goal_state": goal["state"],
+                          "duel_state": duel["state"]})
 
             # Advance each wheel's state machine from this epoch's mixed means (for the NEXT epoch).
+            # touch+goal are independent (FADE->GATE->OFF); the duel wheel is LOCKED until BOTH retire,
+            # then walks FADE->GATE->OFF on goals_for_mean (a goal requires a touch, so goals subsumes
+            # touches and forces the bot to CONVERT the kickoff, not just boot the ball once).
             touch = advance_wheel(touch, touch_mean)
             goal = advance_wheel(goal, goals_mean)
+            if duel["state"] == "LOCKED" and touch["state"] == "OFF" and goal["state"] == "OFF":
+                duel["state"] = "FADE"
+                print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: duel UNLOCKED -> "
+                      f"PHASE 2 (DUEL_REWARD + 1v1 kickoff, {kickoff_time:.0f}s cap)", flush=True)
+            elif duel["state"] not in ("LOCKED", "OFF"):
+                prev = duel["state"]
+                duel = advance_wheel(duel, goals_mean)
+                if duel["state"] != prev:
+                    print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: duel "
+                          f"{prev} -> {duel['state']}"
+                          + (" -> PHASE 3 (DEFAULT_REWARD + native kickoff)"
+                             if duel["state"] == "OFF" else ""), flush=True)
 
             with open(state_path, "w", encoding="utf-8") as f:
-                json.dump({"touch": touch, "goal": goal, "done_epochs": it + 1, "curve": curve}, f)
+                json.dump({"touch": touch, "goal": goal, "duel": duel,
+                           "done_epochs": it + 1, "curve": curve}, f)
             print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: er={er:.4f} "
                   f"goals={goals_mean:.2f} touches={touch_mean:.2f} "
-                  f"touch={touch['state']} goal={goal['state']}", flush=True)
+                  f"touch={touch['state']} goal={goal['state']} duel={duel['state']}", flush=True)
     finally:
         learner.stop_agents()
 

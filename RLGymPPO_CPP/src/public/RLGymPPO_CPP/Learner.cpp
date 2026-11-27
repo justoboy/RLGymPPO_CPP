@@ -831,7 +831,8 @@ void RLGPC::Learner::SeedMember(int member, std::filesystem::path folder) {
 
 void RLGPC::Learner::SetWheelConfig(bool touchEnabled, float touchD, float touchProb,
                                    bool goalEnabled, float goalBallY, float goalProb,
-                                   float drillTime, float nativeTime) {
+                                   float drillTime, float nativeTime,
+                                   bool phase1Active, float duelTime) {
 	// Mutate every live game's TeamConfigMutator wheel holder. Games using a non-league setter (plain
 	// RandomState self-play) have no holder and are skipped. Locks each agent's step mutex so the worker
 	// doesn't read the holder mid-write.
@@ -840,14 +841,16 @@ void RLGPC::Learner::SetWheelConfig(bool touchEnabled, float touchD, float touch
 		for (auto* game : agent->gameInsts) {
 			auto* tcm = dynamic_cast<RLGSC::TeamConfigMutator*>(game->match->stateSetter);
 			if (tcm && tcm->wheel) {
-				tcm->wheel->touch_enabled = touchEnabled;
-				tcm->wheel->touch_d       = touchD;
-				tcm->wheel->touch_prob    = touchProb;
-				tcm->wheel->goal_enabled  = goalEnabled;
-				tcm->wheel->goal_ball_y   = goalBallY;
-				tcm->wheel->goal_prob     = goalProb;
-				tcm->wheel->drill_time    = drillTime;
-				tcm->wheel->native_time   = nativeTime;
+				tcm->wheel->touch_enabled   = touchEnabled;
+				tcm->wheel->touch_d         = touchD;
+				tcm->wheel->touch_prob      = touchProb;
+				tcm->wheel->goal_enabled    = goalEnabled;
+				tcm->wheel->goal_ball_y     = goalBallY;
+				tcm->wheel->goal_prob       = goalProb;
+				tcm->wheel->drill_time      = drillTime;
+				tcm->wheel->native_time     = nativeTime;
+				tcm->wheel->phase1_active   = phase1Active;
+				tcm->wheel->duel_time       = duelTime;
 			}
 		}
 		agent->gameStepMutex.unlock();
