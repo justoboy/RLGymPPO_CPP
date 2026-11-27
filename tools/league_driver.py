@@ -75,7 +75,8 @@ def read_spec(weig_folder):
 def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs, team_weights,
                      member_count, sibling_fraction, random_seed,
                      member_reward_configs=None, wheel_enabled=False,
-                     wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0):
+                     wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0,
+                     full_match=False):
     """EnvConfig at the superset (widest) member layout. The env always emits the superset flat obs;
     the C++ threading layer column-projects each slot down to its owner's own width. Routing is
     PER-EPISODE: the env's TeamConfigMutator samples a (n_blue,n_orange) config each reset and stamps
@@ -119,6 +120,11 @@ def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs,
     ec.wheelDrillTime = float(wheel_drill_time)
     ec.wheelNativeTime = float(wheel_native_time)
     ec.maxOvertimeSeconds = float(max_overtime_seconds)
+    # Native full-match mode: native (non-drill) episodes play to the clock with kickoff respawns (boost +
+    # pads reset to the kickoff value) instead of terminating at the first goal, and the no-touch timeout is
+    # omitted. This is what makes native matches run the full native_time + OT (matching the python
+    # reference's rl_ab2 behavior) and lets the profile tracker accumulate multi-goal history.
+    ec.fullMatch = bool(full_match)
     return ec
 
 

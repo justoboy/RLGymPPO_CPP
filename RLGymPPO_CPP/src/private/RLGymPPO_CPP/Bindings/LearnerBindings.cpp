@@ -166,6 +166,10 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("wheelEnabled", &EnvConfig::wheelEnabled)
 		.def_readwrite("wheelDrillTime", &EnvConfig::wheelDrillTime)
 		.def_readwrite("wheelNativeTime", &EnvConfig::wheelNativeTime)
+		// Native full-match mode: native episodes play to the clock with kickoff respawns (boost + pads
+		// reset to the kickoff value), letting the profile tracker accumulate multi-goal history. Default
+		// false keeps the cheap goal-terminating objective for the rl_ab2 workload.
+		.def_readwrite("fullMatch", &EnvConfig::fullMatch)
 		.def_readwrite("maxOvertimeSeconds", &EnvConfig::maxOvertimeSeconds)
 		// Actor head type: selects the env's action parser (continuous floats vs discrete bin-indices).
 		.def_readwrite("headType", &EnvConfig::headType);

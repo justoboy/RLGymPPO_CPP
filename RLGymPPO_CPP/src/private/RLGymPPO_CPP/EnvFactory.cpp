@@ -57,11 +57,16 @@ namespace RLGPC {
 		}
 
 
-		std::vector<TerminalCondition*> terminalConditions = {
-			new NoTouchCondition(ec.noTouchTimeoutSecs * 120 / ec.tickSkip),
-			new ScoreboardGoalCondition(1),   // terminate when either team reaches 1 goal (the drill's objective)
-			new ScoreboardTimeCondition(ec.maxOvertimeSeconds) // truncate on the per-episode clock cap / overtime
-		};
+		// Terminal conditions. The no-touch timeout only applies to the cheap goal-terminating objective: on a
+		// native FULL-MATCH episode it is omitted (the reference has no no-touch condition) so a full match
+		// isn't truncated by an idle bot — the clock (ScoreboardTimeCondition) is the sole end condition. The
+		// goal condition is drill-aware (drill goals never terminate) and full-match-aware (native goals
+		// respawn to kickoff instead of terminating) — see ScoreboardGoalCondition + Gym::Step.
+		std::vector<TerminalCondition*> terminalConditions;
+		if (!ec.fullMatch)
+			terminalConditions.push_back(new NoTouchCondition(ec.noTouchTimeoutSecs * 120 / ec.tickSkip));
+		terminalConditions.push_back(new ScoreboardGoalCondition(1, ec.fullMatch));
+		terminalConditions.push_back(new ScoreboardTimeCondition(ec.maxOvertimeSeconds));
 
 		// Superset temporal obs builder: emits q(195) ++ kv(151*64) ++ m(151) ++ mode(1) per agent.
 		auto obs = new TemporalObsBuilder();
@@ -107,7 +112,8 @@ namespace RLGPC {
 			actionParser,
 			stateSetter,
 			ec.teamSize,
-			ec.spawnOpponents
+			ec.spawnOpponents,
+			ec.fullMatch
 		);
 
 		Gym* gym = new Gym(match, ec.tickSkip, CAR_CONFIG_OCTANE, ec.gameMode, MutatorConfig(ec.gameMode));

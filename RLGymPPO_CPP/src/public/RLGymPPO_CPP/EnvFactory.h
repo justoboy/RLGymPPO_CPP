@@ -72,6 +72,15 @@ namespace RLGPC {
 		float wheelDrillTime  = 10.0f;   // clock cap (s) on a drill episode
 		float wheelNativeTime = 300.0f;  // clock cap (s) on a native (non-drill) episode
 
+		// Native full-match mode. When true, NATIVE (non-drill) episodes play to the clock instead of
+		// terminating at the first goal: a goal respawns to kickoff (boost + pads reset to the kickoff
+		// value, clock preserved) so the match runs to expiry with multiple goals. This is what lets the
+		// profile tracker accumulate multi-goal history (its EMAs + pseudo-count features otherwise sit at
+		// neutral priors in short goal-terminating episodes). Default false keeps the cheap goal-terminating
+		// objective available for the rl_ab2 workload. When true, the no-touch timeout is also disabled so a
+		// full match isn't truncated by an idle bot (the reference has no no-touch condition at all).
+		bool  fullMatch       = false;
+
 		// Overtime grace (s) before a tied game is force-truncated (the ScoreboardTimeCondition terminal).
 		float maxOvertimeSeconds = 300.0f;
 

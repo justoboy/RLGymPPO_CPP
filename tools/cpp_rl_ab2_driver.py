@@ -107,7 +107,12 @@ def build_learner(L, job, layout):
                                 "opponent_punish": init_op}],
         wheel_enabled=True, wheel_drill_time=float(job["drill_time"]),
         wheel_native_time=float(job["native_time"]),
-        max_overtime_seconds=float(job["max_overtime_seconds"]))
+        max_overtime_seconds=float(job["max_overtime_seconds"]),
+        # Native matches run the full native_time + OT (kickoff respawn on goal, no no-touch truncation),
+        # matching the python reference's rl_ab2 behavior (10s drills, native matches to the clock). This is
+        # also what lets the profile tracker accumulate multi-goal history. Drill episodes still cap at
+        # drill_time via the drillActive path.
+        full_match=bool(job.get("full_match", True)))
 
     pc = build_perceiver(L, layout)
     cfg = L.LearnerConfig()
