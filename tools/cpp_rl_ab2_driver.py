@@ -66,28 +66,45 @@ def split_reward(rmap):
     return m, ts, op
 
 
-def advance_wheel(w, metric):
+def advance_wheel(w, metric, smooth_window=0):
     """Advance one wheel's state machine by one epoch given its epoch-mean metric (FADE-FIRST-THEN-GATE).
-    FADE: score = clamp(score + (+2 if metric >= x else -3), 0, z); score >= z -> GATE (streak = 0).
-    GATE: streak = streak+1 if metric >= x else 0; streak >= y -> OFF. No-op once OFF or LOCKED."""
+    FADE: score = clamp(score + (+2 if hit else -3), 0, z); score >= z -> GATE (streak = 0).
+    GATE: streak = streak+1 if RAW metric >= x else 0; streak >= y -> OFF. No-op once OFF or LOCKED.
+
+    SMOOTHING (smooth_window > 0): the FADE walk's `hit` is decided on the ROLLING MEAN of the last
+    `smooth_window` epoch-metrics, not the single raw epoch. This collapses the per-epoch sampling
+    variance that otherwise turns the +2/-3 walk into a diffusion-dominated random walk absorbed at the
+    0 floor (a true mean just above x still dips below it ~half the time on 32-match noise, so the tiny
+    drift never accumulates). Smoothing concentrates the estimator on the true mean: a wheel genuinely
+    above x climbs reliably, one genuinely below stays pinned -- it SHARPENS the ~60% bar rather than
+    lowering it, so luck still cannot carry a wheel forward. The GATE proof stays on the RAW metric (a
+    clean native-competence test, never smoothed). The rolling buffer lives in w["hist"] (persisted)."""
     state = w["state"]
     if state in ("OFF", "LOCKED"):
         return w
-    hit = metric >= w["x"]
+    hist = list(w.get("hist", []))
+    if smooth_window > 0:
+        hist = (hist + [float(metric)])[-smooth_window:]
+        hit = (sum(hist) / len(hist)) >= w["x"] if hist else (metric >= w["x"])
+    else:
+        hit = metric >= w["x"]
     if state == "FADE":
         score = max(0.0, min(float(w["z"]), w["score"] + (2.0 if hit else -3.0)))
         if score >= w["z"]:
             return {"state": "GATE", "streak": 0, "score": float(w["z"]),
-                    "x": w["x"], "y": w["y"], "z": w["z"]}
+                    "x": w["x"], "y": w["y"], "z": w["z"], "hist": []}
         return {"state": "FADE", "streak": 0, "score": score,
-                "x": w["x"], "y": w["y"], "z": w["z"]}
+                "x": w["x"], "y": w["y"], "z": w["z"], "hist": hist}
     # GATE: the wheel's drill is suppressed (the mutator measures on the native fallback episode).
-    streak = w["streak"] + 1 if hit else 0
+    # The retirement proof is the RAW metric -- never smoothed -- so a wheel only retires on genuine
+    # native competence, not on a smoothed average of easier fading epochs.
+    raw_hit = metric >= w["x"]
+    streak = w["streak"] + 1 if raw_hit else 0
     if streak >= w["y"]:
         return {"state": "OFF", "streak": 0, "score": w["score"],
-                "x": w["x"], "y": w["y"], "z": w["z"]}
+                "x": w["x"], "y": w["y"], "z": w["z"], "hist": []}
     return {"state": "GATE", "streak": streak, "score": w["score"],
-            "x": w["x"], "y": w["y"], "z": w["z"]}
+            "x": w["x"], "y": w["y"], "z": w["z"], "hist": hist}
 
 
 def wheel_geometry(w):
@@ -166,7 +183,8 @@ def build_learner(L, job, layout):
 
 
 def _new_wheel(state, x, y, z):
-    return {"state": state, "streak": 0, "score": 0.0, "x": float(x), "y": int(y), "z": float(z)}
+    return {"state": state, "streak": 0, "score": 0.0, "x": float(x), "y": int(y), "z": float(z),
+            "hist": []}
 
 
 def main():
@@ -207,6 +225,8 @@ def main():
     native_time = float(job["native_time"])
     # The bridge may omit kickoff_time (older jobs); default to the reference's 30s duel cap.
     kickoff_time = float(job.get("kickoff_time", DEFAULT_KICKOFF_TIME))
+    # FADE-walk metric smoothing window (epochs); 0 disables smoothing (raw per-epoch hit). See advance_wheel.
+    smooth_window = int(job.get("smooth_window", 0))
 
     if resuming:
         with open(state_path, "r", encoding="utf-8") as f:
@@ -229,6 +249,7 @@ def main():
         for w in (touch, goal, duel):
             if w["state"] == "ACQUIRING":
                 w["state"] = "FADE"
+            w.setdefault("hist", [])  # migration: pre-smoothing state files have no rolling buffer
         print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] resumed at epoch {done}/{epochs} "
               f"(touch={touch['state']} goal={goal['state']} duel={duel['state']})", flush=True)
     else:
@@ -284,15 +305,15 @@ def main():
             # touch+goal are independent (FADE->GATE->OFF); the duel wheel is LOCKED until BOTH retire,
             # then walks FADE->GATE->OFF on goals_for_mean (a goal requires a touch, so goals subsumes
             # touches and forces the bot to CONVERT the kickoff, not just boot the ball once).
-            touch = advance_wheel(touch, touch_mean)
-            goal = advance_wheel(goal, goals_mean)
+            touch = advance_wheel(touch, touch_mean, smooth_window)
+            goal = advance_wheel(goal, goals_mean, smooth_window)
             if duel["state"] == "LOCKED" and touch["state"] == "OFF" and goal["state"] == "OFF":
                 duel["state"] = "FADE"
                 print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: duel UNLOCKED -> "
                       f"PHASE 2 (DUEL_REWARD + 1v1 kickoff, {kickoff_time:.0f}s cap)", flush=True)
             elif duel["state"] not in ("LOCKED", "OFF"):
                 prev = duel["state"]
-                duel = advance_wheel(duel, goals_mean)
+                duel = advance_wheel(duel, goals_mean, smooth_window)
                 if duel["state"] != prev:
                     print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: duel "
                           f"{prev} -> {duel['state']}"
@@ -304,7 +325,9 @@ def main():
                            "done_epochs": it + 1, "curve": curve}, f)
             print(f"[cpp-ab2 {job['arm']}/seed{job['seed']}] epoch {it}: er={er:.4f} "
                   f"goals={goals_mean:.2f} touches={touch_mean:.2f} "
-                  f"touch={touch['state']} goal={goal['state']} duel={duel['state']}", flush=True)
+                  f"touch={touch['state']}({touch['score']:.0f}/{touch['z']:.0f}) "
+                  f"goal={goal['state']}({goal['score']:.0f}/{goal['z']:.0f}) "
+                  f"duel={duel['state']}({duel['score']:.0f}/{duel['z']:.0f})", flush=True)
     finally:
         learner.stop_agents()
 
