@@ -22,6 +22,10 @@ RLGSC::Gym::StepResult RLGPC::GameInst::Step(const FList& actions) {
 
 	auto& nextObs = stepResult.obs;
 
+	// Capture the obs of the state we just stepped into BEFORE the done-reset overwrites it below. The
+	// trajectory's next_obs must be THIS (the done-state obs, old player count), not the post-reset curObs.
+	lastStepObs = stepResult.obs;
+
 	{ // Accumulate each slot's OWN per-step reward into its running episode return (kept separate per
 	  // slot, never summed across slots). avgStepRew is the per-step mean across active slots (a separate
 	  // diagnostic); the per-owner episode return is derived from curSlotRew at episode end (max over the

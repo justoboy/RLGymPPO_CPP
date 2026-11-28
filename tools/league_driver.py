@@ -74,8 +74,8 @@ def read_spec(weig_folder):
 
 def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs, team_weights,
                      member_count, sibling_fraction, random_seed,
-                     member_reward_configs=None, wheel_enabled=False,
-                     wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0,
+                     member_reward_configs=None,
+                     native_time=300.0, target_goals=1, max_overtime_seconds=300.0,
                      full_match=False):
     """EnvConfig at the superset (widest) member layout. The env always emits the superset flat obs;
     the C++ threading layer column-projects each slot down to its owner's own width. Routing is
@@ -112,13 +112,12 @@ def build_env_config(L, member_layouts, *, tick_skip=8, game_mode, team_configs,
             cfg.opponentPunish = float(mrc["opponent_punish"])
             configs.append(cfg)
         ec.memberRewardConfigs = configs
-    # Two-wheel spawn curriculum (touch + goal). wheelEnabled gates the curriculum; the per-wheel geometry +
-    # fire-probability are pushed per-epoch via learner.set_wheel_config(). drill/native are the per-episode
-    # clock caps; max_overtime_seconds is the tied-game overtime truncation (set >= native so native episodes
-    # end on regulation expiry, not an earlier overtime truncation).
-    ec.wheelEnabled = bool(wheel_enabled)
-    ec.wheelDrillTime = float(wheel_drill_time)
-    ec.wheelNativeTime = float(wheel_native_time)
+    # Data-driven drill curriculum: the driver pushes the resolved DrillSpec list per epoch via
+    # learner.set_drill_config(); native_time is the clock cap (s) on a native (non-drill) episode.
+    # target_goals is the native goal-terminating target (ignored when full_match). max_overtime_seconds
+    # is the tied-game overtime truncation (set >= native so native episodes end on regulation expiry).
+    ec.nativeTime = float(native_time)
+    ec.targetGoals = int(target_goals)
     ec.maxOvertimeSeconds = float(max_overtime_seconds)
     # Native full-match mode: native (non-drill) episodes play to the clock with kickoff respawns (boost +
     # pads reset to the kickoff value) instead of terminating at the first goal, and the no-touch timeout is
@@ -152,8 +151,8 @@ class LeagueDriver:
                  batch_size=32, mini_batch_size=16, epochs=1,
                  actor_lr=1e-4, critic_lr=1e-4, ent_coef=0.01, clip_range=0.2, lambda_fsp=0.0,
                  standardize_returns=False, device="CPU",
-                 member_reward_configs=None, wheel_enabled=False,
-                 wheel_drill_time=10.0, wheel_native_time=300.0, max_overtime_seconds=300.0):
+                 member_reward_configs=None,
+                 native_time=300.0, target_goals=1, max_overtime_seconds=300.0):
         self.L = L
         self.learner = None
         self.member_weig = []
@@ -174,8 +173,7 @@ class LeagueDriver:
                               team_configs=team_configs, team_weights=team_weights,
                               member_count=member_count, sibling_fraction=sibling_fraction,
                               random_seed=seed, member_reward_configs=member_reward_configs,
-                              wheel_enabled=wheel_enabled, wheel_drill_time=wheel_drill_time,
-                              wheel_native_time=wheel_native_time,
+                              native_time=native_time, target_goals=target_goals,
                               max_overtime_seconds=max_overtime_seconds)
         cfg = L.LearnerConfig()
         cfg.deviceType = getattr(L.LearnerDeviceType, device)
@@ -277,9 +275,8 @@ def main():
         standardize_returns=bool(raw.get("standardize_returns", False)),
         device=str(raw.get("device", "CPU")),
         member_reward_configs=member_reward_configs,
-        wheel_enabled=bool(raw.get("wheel_enabled", False)),
-        wheel_drill_time=float(raw.get("wheel_drill_time", 10.0)),
-        wheel_native_time=float(raw.get("wheel_native_time", 300.0)),
+        native_time=float(raw.get("native_time", 300.0)),
+        target_goals=int(raw.get("target_goals", 1)),
         max_overtime_seconds=float(raw.get("max_overtime_seconds", 300.0)),
     )
 

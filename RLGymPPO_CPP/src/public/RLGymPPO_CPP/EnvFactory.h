@@ -62,15 +62,17 @@ namespace RLGPC {
 		float siblingFraction = 0.0f;
 		int randomSeed = 123; // per-env sampler seed (each game's sampler draws its own episodes)
 
-		// Two-wheel spawn curriculum (touch + goal). When wheelEnabled, the TeamConfigMutator may override a
-		// fraction of episodes' native kickoff with a drill spawn (touch: car at distance d from a center ball;
-		// goal: a 1v0 breakaway with the ball on the lone car's attack axis). The driver advances each wheel's
-		// streak/score state machine per epoch and writes the per-wheel geometry + fire-probability via
-		// SetWheelConfig(); wheelEnabled just gates whether the curriculum is active at all. Disabled =>
-		// every episode uses the native random kickoff.
-		bool  wheelEnabled    = false;
-		float wheelDrillTime  = 10.0f;   // clock cap (s) on a drill episode
-		float wheelNativeTime = 300.0f;  // clock cap (s) on a native (non-drill) episode
+		// Data-driven drill curriculum. The driver owns the phase state machine and pushes the resolved
+		// DrillSpec list onto every live env per epoch via Learner::SetDrillConfig; the mutator evaluates
+		// the list per episode (first enabled spec spawns it, none enabled => native kickoff). At
+		// construction every drill starts disabled (run begins native until the driver's first push).
+		// nativeTime is the clock cap (s) on a native (non-drill) episode.
+		float nativeTime = 300.0f;
+
+		// Goals required to end a NATIVE episode (ScoreboardGoalCondition target). 1 = goal-terminating;
+		// ignored when fullMatch (goals respawn to kickoff until the clock expires). Drill episodes never
+		// terminate on goals (drillActive).
+		int targetGoals = 1;
 
 		// Native full-match mode. When true, NATIVE (non-drill) episodes play to the clock instead of
 		// terminating at the first goal: a goal respawns to kickoff (boost + pads reset to the kickoff

@@ -24,6 +24,13 @@ namespace RLGPC {
 
 		FList2 curObs;
 
+		// The obs of the state stepped into on the most recent Step (the DONE-state obs when that step
+		// ended the episode). curObs is overwritten with the NEXT episode's reset obs on a done, so the
+		// trajectory's next_obs must be read from HERE, not curObs: the append loop indexes it by the OLD
+		// episode's player count (prevOwners), and a count that SHRINKS at the reset (e.g. a 1v1 touch
+		// episode -> a 1v0 goal episode) would otherwise index the post-reset tensor out of range.
+		FList2 lastStepObs;
+
 		// Owner id per currently-active slot (blue-first order, same order as curObs rows /
 		// gym->prevState.players). Re-read from gym->prevState.slotOwners on every episode reset, so the
 	// learner routes each slot's trajectory to the member that owned it DURING that episode. For a

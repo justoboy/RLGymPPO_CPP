@@ -5,23 +5,26 @@
 
 using namespace RLGPC;
 
-torch::Tensor MakeGamesOBSTensor(std::vector<GameInst*>& games) {
-	// Every game's obs rows share the same width (obsSize), and concatenating row-major
-	// blocks along dim 0 is identical to one row-major buffer of all players' obs. So we
-	// copy every player's obs into a single contiguous buffer and build ONE tensor, which
-	// removes both the per-game tensor construction and the torch::concat dispatch. The
-	// float32 values are identical (torch::equal == true); only the dispatch count changes.
+// Build one contiguous (totalPlayers, obsSize) tensor by concatenating every game's per-player obs rows
+// along dim 0 (row-major blocks == one row-major buffer of all players' obs; identical float32 to the old
+// per-game-tensor + concat path, fewer dispatches). `obsField` selects WHICH obs to read: GameInst::curObs
+// (the obs of the state each game is currently IN — the new episode after a done-reset) or
+// GameInst::lastStepObs (the obs of the state each game just STEPPED into — the done-state obs, which
+// curObs overwrites on a done). The trajectory's next_obs must use lastStepObs so its row count matches the
+// OLD episode's player count (the append loop indexes it by prevOwners); using curObs there would index out
+// of range whenever the active set SHRINKS at the reset (e.g. a 1v1 touch episode -> a 1v0 goal episode).
+torch::Tensor MakeGamesOBSTensor(std::vector<GameInst*>& games, FList2 GameInst::*obsField) {
 	assert(!games.empty());
 
 	int totalPlayers = 0;
 	for (auto game : games)
-		totalPlayers += (int)game->curObs.size();
-	int obsSize = (int)games[0]->curObs[0].size();
+		totalPlayers += (int)(game->*obsField).size();
+	int obsSize = (int)(games[0]->*obsField)[0].size();
 
 	std::vector<float> buf;
 	buf.reserve((size_t)totalPlayers * (size_t)obsSize);
 	for (auto game : games)
-		for (auto& row : game->curObs)
+		for (auto& row : game->*obsField)
 			buf.insert(buf.end(), row.begin(), row.end());
 
 	auto options = torch::TensorOptions().dtype(at::kFloat);
@@ -87,7 +90,7 @@ void _RunFunc(ThreadAgent* ta) {
 		game->Start();
 
 	// Will stores our current observations for all our games
-	torch::Tensor curObsTensor = MakeGamesOBSTensor(games);
+	torch::Tensor curObsTensor = MakeGamesOBSTensor(games, &GameInst::curObs);
 
 	constexpr bool halfPrec = false;
 
@@ -184,6 +187,7 @@ void _RunFunc(ThreadAgent* ta) {
 		ta->gameStepMutex.lock();
 		auto stepResults = new RLGSC::Gym::StepResult[numGames];
 		int actionsOffset = 0;
+		bool anyReset = false; // did any game end its episode this step (curObs now holds the NEW episode)
 		for (int i = 0; i < numGames; i++) {
 			auto game = games[i];
 			int numPlayers = (int)game->curObs.size(); // active count for this game this step
@@ -194,6 +198,7 @@ void _RunFunc(ThreadAgent* ta) {
 
 			// Flatten (numPlayers, nControls) -> flat FList for the continuous action parser
 			stepResults[i] = game->Step(TENSOR_TO_FLIST(actionSlice.flatten()));
+			anyReset |= stepResults[i].done;
 
 			actionsOffset += numPlayers;
 		}
@@ -205,8 +210,12 @@ void _RunFunc(ThreadAgent* ta) {
 		float envStepTime = gymStepTimer.Elapsed();
 		ta->times.envStepTime += envStepTime;
 
-		// Update our tensor storing the next observation after the step, from each gym
-		torch::Tensor nextObsTensor = MakeGamesOBSTensor(games);
+		// The trajectory's next_obs: the obs of the state we just stepped into (the DONE-state obs when
+		// this step ended the episode), read from lastStepObs. Its row count matches the OLD episode's
+		// player count (prevOwners), which the append loop below indexes by. (curObs has already been
+		// overwritten with the NEW episode's reset obs on a done, so reading curObs here would index out
+		// of range whenever the active set shrinks at the reset.)
+		torch::Tensor nextObsTensor = MakeGamesOBSTensor(games, &GameInst::lastStepObs);
 
 		if (!render) {
 			// Steps complete, add all timestep data to our per-slot trajectories, for each game. The stored
@@ -288,8 +297,11 @@ void _RunFunc(ThreadAgent* ta) {
 			}
 		}
 
-		// Now that the step is done, our next OBS becomes our current
-		curObsTensor = nextObsTensor;
+		// Now that the step is done, our next OBS becomes our current. On a non-done step lastStepObs == the
+		// post-step curObs, so nextObsTensor is already the correct next curObsTensor (reuse it, no rebuild).
+		// On a done step curObs holds the NEW episode's reset obs (possibly a different player count), so
+		// rebuild from curObs to keep the next iteration's inference rows aligned with the live games.
+		curObsTensor = anyReset ? MakeGamesOBSTensor(games, &GameInst::curObs) : std::move(nextObsTensor);
 
 		delete[] stepResults;
 	}

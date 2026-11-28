@@ -52,6 +52,9 @@ CMakeSettings.json
 # Anything starting with three underscores
 ___*
 
+# Curriculum driver smoke-test scratch outputs
+tools/_smoke_*
+
 # ML model files
 *.pt
 *.PT

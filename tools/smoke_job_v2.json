@@ -1,0 +1,101 @@
+{
+  "arm": "smoke",
+  "seed": 7,
+  "head": "continuous",
+  "checkpoint": null,
+  "entity_features": 39,
+  "query_features": 195,
+  "kv_features": 64,
+  "n_tokens": 151,
+  "n_controls": 9,
+  "n_frames": 13,
+  "game_mode": "SOCCAR",
+  "tick_skip": 8,
+  "n_blue": 1,
+  "n_orange": 1,
+  "device": "CPU",
+  "num_threads": 1,
+  "games_per_thread": 2,
+  "timesteps_per_iteration": 512,
+  "matches_per_epoch": 8,
+  "exp_buffer_size": 4096,
+  "standardize_returns": false,
+  "batch_size": 32,
+  "mini_batch_size": 16,
+  "epochs_ppo": 1,
+  "actor_lr": 0.0001,
+  "critic_lr": 0.0001,
+  "ent_coef": 0.01,
+  "clip_range": 0.2,
+  "lambda_fsp": 0.0,
+  "epochs": 6,
+  "curriculum": true,
+  "native_time": 30.0,
+  "native_fraction": 0.0,
+  "target_goals": 1,
+  "max_overtime_seconds": 60.0,
+  "full_match": false,
+  "save_dir": "tools/_smoke_save",
+  "load_dir": null,
+  "out_path": "tools/_smoke_out.json",
+  "default_reward": {
+    "goal": 1.0,
+    "proximity": 0.1,
+    "team_spirit": 0.6,
+    "opponent_punish": 1.0
+  },
+  "phases": [
+    {
+      "name": "touch",
+      "metric": "touches_for_mean",
+      "x": 0.0,
+      "y": 1,
+      "z": 2,
+      "reward": {
+        "proximity": 1.0,
+        "team_spirit": 0.0,
+        "opponent_punish": 0.0
+      },
+      "drill": {
+        "spawn_type": "TOUCH",
+        "car_dist": [400, 4000],
+        "clock_cap": 5.0
+      }
+    },
+    {
+      "name": "goal",
+      "metric": "goals_for_mean",
+      "x": 0.0,
+      "y": 1,
+      "z": 2,
+      "reward": {
+        "goal": 5.0,
+        "proximity": 0.2,
+        "team_spirit": 0.0,
+        "opponent_punish": 0.0
+      },
+      "drill": {
+        "spawn_type": "GOAL_BREAKAWAY",
+        "n_blue": 1,
+        "n_orange": 0,
+        "car_dist": 600,
+        "ball_y": [5120, 0],
+        "clock_cap": 5.0
+      }
+    },
+    {
+      "name": "duel",
+      "metric": "goals_for_mean",
+      "x": 0.0,
+      "y": 1,
+      "z": 2,
+      "drill": {
+        "spawn_type": "NATIVE_KICKOFF",
+        "n_blue": 1,
+        "n_orange": 1,
+        "clock_cap": 10.0,
+        "hard_finish": true
+      }
+    }
+  ]
+}

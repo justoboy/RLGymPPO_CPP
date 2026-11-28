@@ -51,6 +51,26 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.value("GRIDIRON", GameMode::GRIDIRON)
 		.export_values();
 
+	// Data-driven drill curriculum types. The Python driver builds a list of DrillSpecs (one per drill,
+	// in priority order) and pushes it per epoch via Learner.set_drill_config(). The mutator evaluates
+	// the list per episode: the FIRST enabled spec spawns the episode; none enabled => native kickoff.
+	py::enum_<DrillSpawnType>(m, "DrillSpawnType")
+		.value("NATIVE_KICKOFF", DrillSpawnType::NATIVE_KICKOFF)
+		.value("TOUCH", DrillSpawnType::TOUCH)
+		.value("GOAL_BREAKAWAY", DrillSpawnType::GOAL_BREAKAWAY)
+		.export_values();
+
+	py::class_<DrillSpec>(m, "DrillSpec")
+		.def(py::init<>())
+		.def_readwrite("spawn_type", &DrillSpec::spawn_type)
+		.def_readwrite("enabled", &DrillSpec::enabled)
+		.def_readwrite("n_blue", &DrillSpec::n_blue)
+		.def_readwrite("n_orange", &DrillSpec::n_orange)
+		.def_readwrite("car_dist", &DrillSpec::car_dist)
+		.def_readwrite("ball_y", &DrillSpec::ball_y)
+		.def_readwrite("clock_cap", &DrillSpec::clock_cap)
+		.def_readwrite("hard_finish", &DrillSpec::hard_finish);
+
 	py::class_<PerceiverConfig>(m, "PerceiverConfig")
 		.def(py::init<>())
 		.def_readwrite("nDims", &PerceiverConfig::nDims)
@@ -162,11 +182,10 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("randomSeed", &EnvConfig::randomSeed)
 		// Per-member reward spec (one per member, indexed by owner id). Empty => generic CombinedReward.
 		.def_readwrite("memberRewardConfigs", &EnvConfig::memberRewardConfigs)
-		// Two-wheel curriculum: when wheelEnabled, the mutator may override a fraction of episodes' native
-		// kickoff with a drill spawn (touch / goal). drillTime/nativeTime are the per-episode clock caps.
-		.def_readwrite("wheelEnabled", &EnvConfig::wheelEnabled)
-		.def_readwrite("wheelDrillTime", &EnvConfig::wheelDrillTime)
-		.def_readwrite("wheelNativeTime", &EnvConfig::wheelNativeTime)
+		// Data-driven drill curriculum: the driver pushes the resolved DrillSpec list per epoch via
+		// set_drill_config(); nativeTime is the clock cap (s) on a native (non-drill) episode.
+		.def_readwrite("nativeTime", &EnvConfig::nativeTime)
+		.def_readwrite("targetGoals", &EnvConfig::targetGoals)
 		// Native full-match mode: native episodes play to the clock with kickoff respawns (boost + pads
 		// reset to the kickoff value), letting the profile tracker accumulate multi-goal history. Default
 		// false keeps the cheap goal-terminating objective for the rl_ab2 workload.
@@ -203,14 +222,11 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		}, py::arg("member"), py::arg("folder"),
 		"Seed a member's weights from a WEIG checkpoint folder (PPO_POLICY.lt etc.). Optimizers stay fresh.")
 		// Runtime curriculum setters (mutate the live envs in place; no learner rebuild).
-		.def("set_wheel_config", &Learner::SetWheelConfig,
-			py::arg("touch_enabled"), py::arg("touch_d"), py::arg("touch_prob"),
-			py::arg("goal_enabled"), py::arg("goal_ball_y"), py::arg("goal_prob"),
-			py::arg("drill_time"), py::arg("native_time"),
-			py::arg("phase1_active") = false, py::arg("duel_time") = -1.0f,
-			"Write the two-wheel curriculum config (per-wheel enabled/geometry/prob + per-episode clock cap "
-			"+ phase-1 1v0 flag + phase-2 duel clock cap) onto every live env. The driver advances each "
-			"wheel's state machine per epoch and calls this.")
+		.def("set_drill_config", &Learner::SetDrillConfig,
+			py::arg("drills"), py::arg("native_time"), py::arg("native_fraction") = 0.0f,
+			"Write the data-driven drill curriculum (ordered DrillSpec list + native clock cap + "
+			"native escape fraction) onto every live env. The driver resolves its phase state machine "
+			"per epoch and calls this once; the mutator spawns the first enabled spec per episode.")
 		.def("set_member_reward", [](Learner& l, int member, const std::map<std::string, float>& termWeights,
 		                            float teamSpirit, float opponentPunish) {
 			std::vector<std::pair<std::string, float>> tw(termWeights.begin(), termWeights.end());

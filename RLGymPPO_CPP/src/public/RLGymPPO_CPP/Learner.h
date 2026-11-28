@@ -7,6 +7,9 @@
 #include "Util/Timer.h"
 #include "LearnerConfig.h"
 
+// DrillSpec/DrillHolder (the data-driven drill curriculum) appear in SetDrillConfig's signature.
+#include <RLGymSim_CPP/Utils/StateSetters/ModeSamplerMutator.h>
+
 namespace RLGPC {
 
 	typedef std::function<void(class Learner*, std::vector<Report>&)> IterationCallback;
@@ -72,21 +75,16 @@ namespace RLGPC {
 	void SeedMember(int member, std::filesystem::path folder);
 
 	// Runtime curriculum setters. These mutate the LIVE envs in place (each game's TeamConfigMutator
-	// WheelHolder / ComposedReward member spec) so the metric-gated driver can advance the two-wheel
+	// DrillHolder / ComposedReward member spec) so the metric-gated driver can advance the drill
 	// curriculum or recede the reward scaffold mid-run WITHOUT rebuilding the learner. Games whose
 	// setter/reward isn't the league variant (e.g. plain RandomState self-play) are skipped (no-op).
 	// Locks each agent's game-step mutex so the mutation is atomic w.r.t. the collection worker.
-	// SetWheelConfig writes every live game's WheelHolder: touchEnabled/goalEnabled gate each wheel (OFF =>
-	// that drill never fires); touchD/touchProb drive the touch wheel (car->ball distance + per-episode fire
-	// prob); goalBallY/goalProb drive the goal wheel (ball |y| on the lone car's attack axis + fire prob);
-	// drillTime/nativeTime set the per-episode clock cap. phase1Active marks the 1v0 phase-1 curriculum (the
-	// mutator forces a 1v0 lineup + GATE fallback whenever true); duelTime is the phase-2 1v1 duel clock cap
-	// (>=0 => native 1v1 kickoff that HARD-finishes there with no OT; <0 => unset native full match). The
-	// driver advances each wheel's state machine per epoch and calls this once per epoch.
-	void SetWheelConfig(bool touchEnabled, float touchD, float touchProb,
-	                    bool goalEnabled, float goalBallY, float goalProb,
-	                    float drillTime, float nativeTime,
-	                    bool phase1Active = false, float duelTime = -1.0f);
+	// SetDrillConfig writes every live game's DrillHolder: the spec list is evaluated PER EPISODE by
+	// the mutator (first enabled spec spawns the episode; none enabled => native kickoff). The driver
+	// owns the phase state machine and resolves difficulty to concrete geometry before calling this.
+	// nativeTime is the clock cap (s) on a native episode; nativeFraction is the fraction of drill-phase
+	// episodes that escape to a native kickoff (0 = always drill).
+	void SetDrillConfig(const std::vector<RLGSC::DrillSpec>& drills, float nativeTime, float nativeFraction);
 	void SetMemberReward(int member, const std::vector<std::pair<std::string, float>>& termWeights,
 	                     float teamSpirit, float opponentPunish);
 

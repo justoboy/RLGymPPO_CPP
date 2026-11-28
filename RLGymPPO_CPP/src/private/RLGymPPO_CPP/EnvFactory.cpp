@@ -65,7 +65,7 @@ namespace RLGPC {
 		std::vector<TerminalCondition*> terminalConditions;
 		if (!ec.fullMatch)
 			terminalConditions.push_back(new NoTouchCondition(ec.noTouchTimeoutSecs * 120 / ec.tickSkip));
-		terminalConditions.push_back(new ScoreboardGoalCondition(1, ec.fullMatch));
+		terminalConditions.push_back(new ScoreboardGoalCondition(ec.targetGoals, ec.fullMatch));
 		terminalConditions.push_back(new ScoreboardTimeCondition(ec.maxOvertimeSeconds));
 
 		// Superset temporal obs builder: emits q(195) ++ kv(151*64) ++ m(151) ++ mode(1) per agent.
@@ -88,21 +88,16 @@ namespace RLGPC {
 		if (ec.teamConfigs.empty()) {
 			stateSetter = new RandomState(true, true, true, ec.teamSize, ec.spawnOpponents, CAR_CONFIG_OCTANE);
 		} else {
-			// Always allocate a WheelHolder for the league path so the runtime SetWheelConfig() can
-			// enable/adjust the two-wheel curriculum mid-run even when it starts disabled. When a wheel is
-			// disabled the mutator never fires that drill (native kickoff on that axis); enabling later
-			// flips that wheel's `*_enabled` to true. The driver overwrites all fields per epoch.
-			auto* wheel = new WheelHolder{
-				.touch_enabled = ec.wheelEnabled,
-				.touch_d       = 400.0f,
-				.touch_prob    = 0.5f,
-				.goal_enabled  = ec.wheelEnabled,
-				.goal_ball_y   = 0.0f,
-				.goal_prob     = 0.5f,
-				.drill_time    = ec.wheelDrillTime,
-				.native_time   = ec.wheelNativeTime
+			// Always allocate a DrillHolder for the league path so the runtime SetDrillConfig() can
+			// enable/adjust the drill curriculum mid-run even when it starts fully disabled (all specs
+			// off => every episode is a native kickoff until the driver's first push). The driver
+			// overwrites the whole spec list per epoch.
+			auto* drill = new DrillHolder{
+				.drills          = {},
+				.native_time     = ec.nativeTime,
+				.native_fraction = 0.0f
 			};
-			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed, wheel);
+			stateSetter = new TeamConfigMutator(ec.teamConfigs, ec.teamWeights, ec.memberCount, ec.siblingFraction, (uint32_t)seed, drill);
 		}
 
 		Match* match = new Match(
