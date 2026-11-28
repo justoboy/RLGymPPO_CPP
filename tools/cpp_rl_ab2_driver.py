@@ -165,6 +165,11 @@ def build_learner(L, job, layout):
     cfg.numGamesPerThread = int(job["games_per_thread"])
     cfg.timestepsPerIteration = int(job["timesteps_per_iteration"])
     cfg.expBufferSize = int(job["exp_buffer_size"])
+    # Match-based collection (the reference implementation's curriculum driver): when matches_per_epoch
+    # > 0, one iteration collects that many COMPLETED episodes (drills cut short by their time cap still
+    # count, since a time-capped drill emits done). timesteps_per_iteration then only guards against a
+    # hung match. 0 (or absent) keeps the legacy pure step-target collection.
+    cfg.matchesPerIteration = int(job.get("matches_per_epoch", 0))
     cfg.standardizeReturns = bool(job["standardize_returns"])
     cfg.checkpointSaveFolder = str(job["save_dir"])
     cfg.checkpointLoadFolder = str(job.get("load_dir") or "")

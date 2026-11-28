@@ -50,6 +50,12 @@ namespace RLGPC {
 
 		std::atomic<uint64_t> stepsCollected = 0;
 		uint64_t maxCollect;
+
+		// Completed-episode counter for match-based collection (the reference implementation's
+		// curriculum driver). Incremented once per episode `done` in _RunFunc (a drill cut short by
+		// its time cap still emits `done`, so it counts as one completed match). Read by the manager's
+		// CollectTimesteps wait loop when matchesPerIteration is active. Reset alongside stepsCollected.
+		std::atomic<uint64_t> episodesCompleted = 0;
 		
 		// Lock to prevent game stepping
 		std::mutex gameStepMutex = {};

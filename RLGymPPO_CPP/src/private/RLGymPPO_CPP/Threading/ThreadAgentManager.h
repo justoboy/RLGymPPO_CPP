@@ -32,6 +32,13 @@ namespace RLGPC {
 		uint64_t maxCollect;
 		torch::Device device;
 
+		// Match-based collection target (the reference implementation's curriculum driver). When > 0,
+		// CollectTimesteps waits until the agents have collectively COMPLETED this many episodes
+		// (each episode done, including a drill cut short by its time cap) instead of stopping on the
+		// raw step target. maxCollect then serves only as a hang-guard. Set from LearnerConfig by the
+		// Learner before agents are created. 0 = legacy pure step-target collection.
+		uint64_t matchesPerIteration = 0;
+
 		// Superset layout constants (derived from the widest policy config), used to build colIdx.
 		int supEf = 0, supQ = 0, supKv = 0, supTokens = 0;
 

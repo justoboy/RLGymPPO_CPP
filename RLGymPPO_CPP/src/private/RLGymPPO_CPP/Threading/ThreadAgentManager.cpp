@@ -16,14 +16,27 @@ void RLGPC::ThreadAgentManager::CreateAgents(EnvCreateFn func, int amount, int g
 std::vector<RLGPC::GameTrajectory> RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amount) {
 
 	RG_LOG("Collecting timesteps...");
-	// We will just wait in this loop until our agents have collected enough total timesteps
+	// Match-based collection (the reference implementation's curriculum driver): when a match target is
+	// set, wait until the agents have collectively COMPLETED that many episodes (each episode done; a
+	// drill cut short by its time cap still emits done, so it counts). The step target `amount` then
+	// acts only as a hang-guard so a pathological never-ending match can't spin forever. When no match
+	// target is set, this is the legacy pure step-target wait.
+	const bool matchMode = (matchesPerIteration > 0);
 	while (true) {
 		uint64_t totalSteps = 0;
-		for (auto agent : agents)
+		uint64_t totalEpisodes = 0;
+		for (auto agent : agents) {
 			totalSteps += agent->stepsCollected;
+			if (matchMode)
+				totalEpisodes += agent->episodesCompleted;
+		}
 
-		if (totalSteps >= amount)
+		if (matchMode) {
+			if (totalEpisodes >= matchesPerIteration || totalSteps >= amount)
+				break;
+		} else if (totalSteps >= amount) {
 			break;
+		}
 
 		// "waiter! waiter! more timesteps please!"
 
@@ -61,6 +74,7 @@ std::vector<RLGPC::GameTrajectory> RLGPC::ThreadAgentManager::CollectTimesteps(u
 			}
 
 			agent->stepsCollected = 0;
+			agent->episodesCompleted = 0;
 			agent->trajMutex.unlock();
 		}
 	} catch (std::exception& e) {

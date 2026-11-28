@@ -31,6 +31,17 @@ namespace RLGPC {
 
 		int64_t expBufferSize = 100 * 1000;
 		int64_t timestepsPerIteration = 50 * 1000;
+
+		// Match-based collection (the reference implementation's curriculum driver). When > 0, one
+		// iteration collects this many COMPLETED episodes (each episode's `done`, including a drill
+		// cut short by its time cap, which still emits `done`) instead of stopping on a raw step
+		// target. This makes the per-epoch metric a whole-match mean (comparable across drill/native
+		// episode lengths) rather than a step-budget mean. `timestepsPerIteration` then acts only as a
+		// hang-guard: collection stops at whichever comes first (match target reached, or step guard
+		// hit), so a pathological never-ending match can't hang the loop. 0 disables match mode and
+		// falls back to the pure step target (legacy behavior).
+		int64_t matchesPerIteration = 0;
+
 		bool standardizeReturns = true;
 		bool standardizeOBS = false; // TODO: Implement
 		int maxReturnsPerStatsInc = 150;

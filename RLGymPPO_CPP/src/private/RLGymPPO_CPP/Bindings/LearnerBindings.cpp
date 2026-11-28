@@ -94,6 +94,7 @@ PYBIND11_MODULE(rlgym_learner, m) {
 		.def_readwrite("timestepLimit", &LearnerConfig::timestepLimit)
 		.def_readwrite("expBufferSize", &LearnerConfig::expBufferSize)
 		.def_readwrite("timestepsPerIteration", &LearnerConfig::timestepsPerIteration)
+		.def_readwrite("matchesPerIteration", &LearnerConfig::matchesPerIteration)
 		.def_readwrite("standardizeReturns", &LearnerConfig::standardizeReturns)
 		.def_readwrite("deterministic", &LearnerConfig::deterministic)
 		.def_readwrite("collectionDuringLearn", &LearnerConfig::collectionDuringLearn)

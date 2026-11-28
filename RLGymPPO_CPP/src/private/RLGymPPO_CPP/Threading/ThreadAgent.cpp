@@ -254,8 +254,12 @@ void _RunFunc(ThreadAgent* ta) {
 
 				// Episode ended: route this episode's per-slot trajectories to their owners and clear, so
 				// the next episode (which may have a different active set / owners) starts from empty.
-				if (stepResult.done)
+				// A drill cut short by its time cap also emits done, so it counts as one completed
+				// match for the match-based collection target (see ThreadAgent::episodesCompleted).
+				if (stepResult.done) {
+					ta->episodesCompleted.fetch_add(1);
 					FlushSlots(ta->trajectories[i], prevOwners[i], ta->ownerTrajectories);
+				}
 			}
 			ta->trajMutex.unlock();
 			ta->times.trajAppendTime += trajAppendTimer.Elapsed();

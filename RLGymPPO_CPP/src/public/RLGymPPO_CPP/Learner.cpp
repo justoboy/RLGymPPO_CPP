@@ -189,6 +189,10 @@ RLGPC::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig _config) :
 		device
 	);
 	agentMgr->nControls = actionAmount;
+	// Match-based collection (the reference implementation's curriculum driver): when set, each
+	// iteration collects this many completed episodes instead of a raw step target (timestepsPerIteration
+	// then only guards against a hung match). 0 keeps the legacy step-target behavior.
+	agentMgr->matchesPerIteration = (uint64_t)config.matchesPerIteration;
 
 	RG_LOG("\tCreating " << config.numThreads << " agents...");
 	agentMgr->CreateAgents(envCreateFn, config.numThreads, config.numGamesPerThread);
